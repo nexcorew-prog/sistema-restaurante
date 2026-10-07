@@ -17,21 +17,28 @@ export async function POST(request: Request) {
   try {
     const body = await readObject(request)
     if (
-      typeof body.email !== 'string' ||
+      (typeof body.identifier !== 'string' && typeof body.email !== 'string') ||
       typeof body.password !== 'string' ||
-      body.email.length > 254 ||
+      (typeof body.identifier === 'string' && body.identifier.length > 254) ||
+      (typeof body.email === 'string' && body.email.length > 254) ||
       body.password.length > 128
     ) {
-      throw new HttpError('Correo o contraseña incorrectos.', 401)
+      throw new HttpError('Usuario, correo o contraseña incorrectos.', 401)
     }
-    const email = body.email.trim().toLowerCase()
+    const identifier = String(body.identifier ?? body.email).trim().toLowerCase()
+    const isEmail = identifier.includes('@')
     const [user] = await getDb()
       .select()
       .from(users)
-      .where(and(eq(users.email, email), eq(users.active, true)))
+      .where(
+        and(
+          isEmail ? eq(users.email, identifier) : eq(users.username, identifier),
+          eq(users.active, true),
+        ),
+      )
       .limit(1)
     if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
-      throw new HttpError('Correo o contraseña incorrectos.', 401)
+      throw new HttpError('Usuario, correo o contraseña incorrectos.', 401)
     }
     if (user.role !== 'admin' && user.role !== 'cashier') {
       throw new HttpError('La cuenta no tiene un rol válido.', 403)
@@ -45,6 +52,7 @@ export async function POST(request: Request) {
     const response = NextResponse.json({
       id: user.id,
       name: user.name,
+      username: user.username,
       email: user.email,
       role: user.role,
     })

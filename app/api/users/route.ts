@@ -20,6 +20,14 @@ function validatePassword(value: unknown): string {
   return value
 }
 
+function validateUsername(value: unknown): string {
+  const username = requiredText(value, 'El usuario', 64).toLowerCase()
+  if (!/^[a-z0-9._-]{3,64}$/.test(username)) {
+    throw new HttpError('El usuario debe tener entre 3 y 64 caracteres: letras, números, punto, guion o guion bajo.', 400)
+  }
+  return username
+}
+
 export async function GET() {
   try {
     await requireAdmin()
@@ -27,6 +35,7 @@ export async function GET() {
       .select({
         id: users.id,
         name: users.name,
+        username: users.username,
         email: users.email,
         role: users.role,
         active: users.active,
@@ -45,6 +54,7 @@ export async function POST(request: Request) {
     await requireAdmin()
     const body = await readObject(request)
     const name = requiredText(body.name, 'El nombre')
+    const username = validateUsername(body.username)
     if (
       typeof body.email !== 'string' ||
       body.email.trim().length > 254 ||
@@ -57,6 +67,7 @@ export async function POST(request: Request) {
       .insert(users)
       .values({
         name,
+        username,
         email: body.email.trim().toLowerCase(),
         role,
         passwordHash: await hashPassword(validatePassword(body.password)),
@@ -64,6 +75,7 @@ export async function POST(request: Request) {
       .returning({
         id: users.id,
         name: users.name,
+        username: users.username,
         email: users.email,
         role: users.role,
         active: users.active,
@@ -81,6 +93,7 @@ export async function PUT(request: Request) {
     const id = Number(body.id)
     if (!Number.isSafeInteger(id) || id < 1) throw new HttpError('El usuario no es válido.', 400)
     const name = requiredText(body.name, 'El nombre')
+    const username = validateUsername(body.username)
     const role = validateRole(body.role)
     if (typeof body.active !== 'boolean') throw new HttpError('El estado de la cuenta no es válido.', 400)
     const active = body.active
@@ -105,6 +118,7 @@ export async function PUT(request: Request) {
         .update(users)
         .set({
           name,
+          username,
           role,
           active,
           ...(passwordHash ? { passwordHash } : {}),
@@ -113,6 +127,7 @@ export async function PUT(request: Request) {
         .returning({
           id: users.id,
           name: users.name,
+          username: users.username,
           email: users.email,
           role: users.role,
           active: users.active,

@@ -20,6 +20,7 @@ export const users = pgTable(
   {
     id: serial('id').primaryKey(),
     name: varchar('name', { length: 120 }).notNull(),
+    username: varchar('username', { length: 64 }).notNull().unique(),
     email: varchar('email', { length: 254 }).notNull().unique(),
     passwordHash: text('password_hash').notNull(),
     role: varchar('role', { length: 20 }).notNull().default('cashier'),
@@ -42,6 +43,16 @@ export const userSessions = pgTable(
   table => [index('user_sessions_user_id_idx').on(table.userId)],
 )
 
+export const categories = pgTable(
+  'categories',
+  {
+    id: serial('id').primaryKey(),
+    name: varchar('name', { length: 60 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  table => [uniqueIndex('categories_name_unique').on(sql`lower(${table.name})`)],
+)
+
 export const products = pgTable(
   'products',
   {
@@ -49,11 +60,20 @@ export const products = pgTable(
     name: varchar('name', { length: 120 }).notNull(),
     category: varchar('category', { length: 60 }).notNull(),
     priceCents: integer('price_cents').notNull(),
+    imageData: text('image_data'),
+    imageContentType: varchar('image_content_type', { length: 30 }),
     available: boolean('available').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  table => [check('products_price_nonnegative', sql`${table.priceCents} >= 0`)],
+  table => [
+    check('products_price_nonnegative', sql`${table.priceCents} >= 0`),
+    check(
+      'products_image_fields_valid',
+      sql`(${table.imageData} IS NULL AND ${table.imageContentType} IS NULL) OR
+        (${table.imageData} IS NOT NULL AND ${table.imageContentType} IN ('image/webp', 'image/jpeg', 'image/png'))`,
+    ),
+  ],
 )
 
 export const ingredients = pgTable(

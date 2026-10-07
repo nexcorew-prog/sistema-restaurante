@@ -9,7 +9,7 @@ export { hashPassword, verifyPassword } from '@/lib/password'
 export const SESSION_COOKIE = 'restaurant_session'
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 10
 export type UserRole = 'admin' | 'cashier'
-export type AuthUser = { id: number; name: string; email: string; role: UserRole }
+export type AuthUser = { id: number; name: string; username: string; email: string; role: UserRole }
 
 export function newSessionToken() {
   return randomBytes(32).toString('base64url')
@@ -27,6 +27,7 @@ export async function currentUser(): Promise<AuthUser | null> {
     .select({
       id: users.id,
       name: users.name,
+      username: users.username,
       email: users.email,
       role: users.role,
       active: users.active,
@@ -44,7 +45,7 @@ export async function currentUser(): Promise<AuthUser | null> {
   if (record.role !== 'admin' && record.role !== 'cashier') {
     throw new HttpError('La cuenta no tiene un rol válido.', 403)
   }
-  return { id: record.id, name: record.name, email: record.email, role: record.role }
+  return { id: record.id, name: record.name, username: record.username, email: record.email, role: record.role }
 }
 
 export async function requireUser(): Promise<AuthUser> {

@@ -1,0 +1,2 @@
+ALTER TABLE "products" ADD CONSTRAINT "products_image_fields_valid" CHECK (("products"."image_data" IS NULL AND "products"."image_content_type" IS NULL) OR
+        ("products"."image_data" IS NOT NULL AND "products"."image_content_type" IN ('image/webp', 'image/jpeg', 'image/png')));

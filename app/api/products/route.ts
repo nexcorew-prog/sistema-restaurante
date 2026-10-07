@@ -1,11 +1,39 @@
-import { asc, eq, inArray } from 'drizzle-orm'
+import { asc, eq, inArray, sql } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
 import { requireAdmin, requireUser } from '@/lib/auth'
 import { apiError, HttpError, moneyToCents, readObject, requiredText } from '@/lib/http'
 import { getDb } from '@/lib/db'
-import { ingredients, productIngredients, products } from '@/lib/db/schema'
+import { categories, ingredients, productIngredients, products } from '@/lib/db/schema'
 
 export const dynamic = 'force-dynamic'
+
+const MAX_IMAGE_BYTES = 900_000
+
+async function validateCategory(value: unknown) {
+  const name = requiredText(value, 'La categoría', 60)
+  const [category] = await getDb()
+    .select({ name: categories.name })
+    .from(categories)
+    .where(sql`lower(${categories.name}) = lower(${name})`)
+    .limit(1)
+  if (!category) throw new HttpError('La categoría seleccionada ya no existe.', 409)
+  return category.name
+}
+
+function parseProductImage(value: unknown) {
+  if (value === undefined) return undefined
+  if (value === null) return { imageData: null, imageContentType: null }
+  if (typeof value !== 'string') {
+    throw new HttpError('La imagen del plato no es válida.', 400)
+  }
+  const match = /^data:(image\/(?:webp|jpeg|png));base64,([a-zA-Z0-9+/]+={0,2})$/.exec(value)
+  if (!match) throw new HttpError('La imagen debe ser JPG, PNG o WebP.', 400)
+  const imageData = match[2]
+  if (Buffer.byteLength(imageData, 'base64') > MAX_IMAGE_BYTES) {
+    throw new HttpError('La imagen es demasiado grande. Reduce su tamaño e inténtalo otra vez.', 413)
+  }
+  return { imageData, imageContentType: match[1] }
+}
 
 async function validateIngredientIds(value: unknown) {
   if (!Array.isArray(value) || value.length > 100) {
@@ -35,7 +63,12 @@ async function validateIngredientIds(value: unknown) {
   return ingredientIds
 }
 
-async function withRecipe(rows: (typeof products.$inferSelect)[]) {
+type ProductRow = Pick<
+  typeof products.$inferSelect,
+  'id' | 'name' | 'category' | 'priceCents' | 'available' | 'createdAt' | 'updatedAt' | 'imageContentType'
+>
+
+async function withRecipe(rows: ProductRow[]) {
   if (!rows.length) return []
   const recipeRows = await getDb()
     .select({
@@ -55,9 +88,11 @@ async function withRecipe(rows: (typeof products.$inferSelect)[]) {
   }
   return rows.map(product => {
     const recipe = (byProduct.get(product.id) ?? []).map(({ productId: _productId, ...item }) => item)
+    const { imageContentType, ...productData } = product
     return {
-      ...product,
+      ...productData,
       price: product.priceCents / 100,
+      imageUrl: imageContentType ? `/api/products/${product.id}/image` : null,
       ingredients: recipe.map(item => item.name),
       recipe,
     }
@@ -67,7 +102,19 @@ async function withRecipe(rows: (typeof products.$inferSelect)[]) {
 export async function GET() {
   try {
     await requireUser()
-    const rows = await getDb().select().from(products).orderBy(asc(products.name))
+    const rows = await getDb()
+      .select({
+        id: products.id,
+        name: products.name,
+        category: products.category,
+        priceCents: products.priceCents,
+        available: products.available,
+        createdAt: products.createdAt,
+        updatedAt: products.updatedAt,
+        imageContentType: products.imageContentType,
+      })
+      .from(products)
+      .orderBy(asc(products.name))
     return NextResponse.json(await withRecipe(rows))
   } catch (error) {
     return apiError(error)
@@ -79,13 +126,20 @@ export async function POST(request: Request) {
     await requireAdmin()
     const body = await readObject(request)
     const name = requiredText(body.name, 'El nombre')
-    const category = requiredText(body.category, 'La categoría', 60)
+    const category = await validateCategory(body.category)
     const priceCents = moneyToCents(body.price)
+    const image = parseProductImage(body.imageData)
     const ingredientIds = await validateIngredientIds(body.ingredientIds ?? body.recipe)
     const created = await getDb().transaction(async tx => {
       const [product] = await tx
         .insert(products)
-        .values({ name, category, priceCents, available: body.available !== false })
+        .values({
+          name,
+          category,
+          priceCents,
+          available: body.available !== false,
+          ...(image ?? { imageData: null, imageContentType: null }),
+        })
         .returning()
       if (ingredientIds.length) {
         await tx.insert(productIngredients).values(
@@ -107,13 +161,21 @@ export async function PUT(request: Request) {
     const id = Number(body.id)
     if (!Number.isSafeInteger(id) || id < 1) throw new HttpError('El producto no es válido.', 400)
     const name = requiredText(body.name, 'El nombre')
-    const category = requiredText(body.category, 'La categoría', 60)
+    const category = await validateCategory(body.category)
     const priceCents = moneyToCents(body.price)
+    const image = parseProductImage(body.imageData)
     const ingredientIds = await validateIngredientIds(body.ingredientIds ?? body.recipe)
     const updated = await getDb().transaction(async tx => {
       const [product] = await tx
         .update(products)
-        .set({ name, category, priceCents, available: body.available !== false, updatedAt: new Date() })
+        .set({
+          name,
+          category,
+          priceCents,
+          available: body.available !== false,
+          updatedAt: new Date(),
+          ...(image ?? {}),
+        })
         .where(eq(products.id, id))
         .returning()
       if (!product) throw new HttpError('No se encontró el producto.', 404)
@@ -130,6 +192,7 @@ export async function PUT(request: Request) {
     return apiError(error)
   }
 }
+
 
 export async function DELETE(request: Request) {
   try {

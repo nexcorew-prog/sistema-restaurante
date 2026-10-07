@@ -73,11 +73,11 @@ export async function POST(request: Request) {
     const cashier = await requireUser()
     const body = await readObject(request)
     if (!Array.isArray(body.items) || body.items.length === 0 || body.items.length > 100) {
-      throw new HttpError('Agrega entre 1 y 100 productos a la venta.', 400)
+      throw new HttpError('Agrega entre 1 y 100 productos al pedido.', 400)
     }
     const items = body.items.map(raw => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new HttpError('Una línea de la venta no es válida.', 400)
+        throw new HttpError('Una línea del pedido no es válida.', 400)
       }
       const item = raw as Record<string, unknown>
       const productId = Number(item.productId)
@@ -127,7 +127,7 @@ export async function POST(request: Request) {
       )
     }
     if (typeof body.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.requestId)) {
-      throw new HttpError('El identificador de la venta no es válido.', 400)
+      throw new HttpError('El identificador del pedido no es válido.', 400)
     }
     const requestId = body.requestId
 
@@ -176,7 +176,7 @@ export async function POST(request: Request) {
         .where(isNull(cashSessions.closedAt))
         .limit(1)
         .for('update')
-      if (!activeSession) throw new HttpError('Abre la caja antes de registrar ventas.', 409)
+      if (!activeSession) throw new HttpError('Abre la caja antes de registrar pedidos.', 409)
 
       const productIds = [...new Set(items.map(item => item.productId))]
       const catalog = await tx.select().from(products).where(inArray(products.id, productIds)).for('update')
@@ -203,12 +203,12 @@ export async function POST(request: Request) {
         return sum + (byId.get(item.productId)?.priceCents ?? 0) * item.quantity
       }, 0)
       if (!Number.isSafeInteger(totalCents) || totalCents > 2_147_483_647) {
-        throw new HttpError('El total de la venta supera el máximo permitido.', 400)
+        throw new HttpError('El total del pedido supera el máximo permitido.', 400)
       }
       const cashReceivedCents =
         paymentMethod === 'cash' ? moneyToCents(body.cashReceived, 'El efectivo recibido') : null
       if (paymentMethod === 'cash' && (cashReceivedCents === null || cashReceivedCents < totalCents)) {
-        throw new HttpError('El efectivo recibido debe cubrir el total de la venta.', 400)
+        throw new HttpError('El efectivo recibido debe cubrir el total del pedido.', 400)
       }
       const changeCents = cashReceivedCents === null ? 0 : cashReceivedCents - totalCents
       const [sale] = await tx
@@ -246,7 +246,7 @@ export async function POST(request: Request) {
           cashSessionId: activeSession.id,
           type: 'sale',
           amountCents: totalCents,
-          description: `Venta #${sale.id}`,
+          description: `Pedido #${sale.id}`,
           userId: cashier.id,
         })
       }

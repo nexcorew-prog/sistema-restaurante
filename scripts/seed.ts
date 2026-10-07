@@ -49,12 +49,18 @@ async function seed() {
         `
         if (existing.length === 0) {
           const name = process.env.INITIAL_ADMIN_NAME?.trim() || 'Administrador'
+          const username =
+            process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase() ||
+            `${email.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]+/g, '_').replace(/^[._-]+|[._-]+$/g, '').slice(0, 54) || 'admin'}.admin`
+          if (!/^[a-z0-9._-]{3,64}$/.test(username)) {
+            throw new Error('INITIAL_ADMIN_USERNAME must be 3–64 characters: letters, numbers, dots, hyphens, or underscores.')
+          }
           const passwordHash = await hashPassword(password)
           await transaction`
-            INSERT INTO users (name, email, password_hash, role, active)
-            VALUES (${name}, ${email}, ${passwordHash}, 'admin', true)
+            INSERT INTO users (name, username, email, password_hash, role, active)
+            VALUES (${name}, ${username}, ${email}, ${passwordHash}, 'admin', true)
           `
-          console.info(`Initial admin created for ${email}.`)
+          console.info(`Initial admin created for ${email} with username ${username}.`)
         } else {
           console.info(`Admin account ${email} already exists; its password was not changed.`)
         }

@@ -8,7 +8,12 @@ import {
   Clock3,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   Home,
+  ImagePlus,
+  LockKeyhole,
+  Mail,
   Menu,
   Minus,
   Pencil,
@@ -30,8 +35,9 @@ import { Button } from '@/components/ui/button'
 
 type Section =
   | 'Inicio'
-  | 'Nueva venta'
+  | 'Pedidos'
   | 'Platos'
+  | 'Categorías'
   | 'Ingredientes'
   | 'Ventas'
   | 'Caja'
@@ -45,12 +51,14 @@ type Product = {
   category: string
   ingredients: string[]
   recipe: RecipeLine[]
+  imageUrl: string | null
   available: boolean
 }
 type Ingredient = {
   id: number
   name: string
 }
+type Category = { id: number; name: string }
 type OrderLine = {
   key: string
   product: Product
@@ -156,15 +164,15 @@ type CashHistoryEntry = {
   movements: NonNullable<CashData['movements']>
 }
 type RestaurantSettings = { name: string; address: string; phone: string; currency: string }
-type StaffUser = { id: number; name: string; email: string; role: 'admin' | 'cashier'; active: boolean }
+type StaffUser = { id: number; name: string; username: string; email: string; role: 'admin' | 'cashier'; active: boolean }
 type AuthUser = Omit<StaffUser, 'active'>
 
 const navigation: { label: Section; icon: typeof Home }[] = [
   { label: 'Inicio', icon: Home },
-  { label: 'Nueva venta', icon: ShoppingBag },
+  { label: 'Pedidos', icon: ShoppingBag },
   { label: 'Platos', icon: UtensilsCrossed },
   { label: 'Ingredientes', icon: Boxes },
-  { label: 'Ventas', icon: ReceiptText },
+  { label: 'Categorías', icon: ClipboardList },
   { label: 'Caja', icon: Wallet },
   { label: 'Reportes', icon: BarChart3 },
   { label: 'Configuración', icon: Settings },
@@ -176,6 +184,47 @@ const dateTime = (date: string | Date) =>
     timeStyle: 'short',
     timeZone: 'America/La_Paz',
   }).format(new Date(date))
+
+async function optimizeProductImage(file: File): Promise<string> {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    throw new Error('Elige una imagen JPG, PNG o WebP.')
+  }
+  if (file.size > 20_000_000) {
+    throw new Error('La imagen original debe pesar menos de 20 MB.')
+  }
+  const bitmap = await createImageBitmap(file)
+  try {
+    const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('No se pudo preparar la imagen.')
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+
+    let image: Blob | null = null
+    for (const quality of [0.82, 0.68, 0.54]) {
+      image = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', quality))
+      if (image && image.size <= 900_000) break
+    }
+    if (!image || image.size > 900_000) {
+      throw new Error('No se pudo reducir la imagen lo suficiente. Elige una imagen más sencilla.')
+    }
+
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        if (typeof reader.result === 'string') resolve(reader.result)
+        else reject(new Error('No se pudo leer la imagen seleccionada.'))
+      }
+      reader.onerror = () => reject(new Error('No se pudo leer la imagen seleccionada.'))
+      reader.readAsDataURL(image)
+    })
+  } finally {
+    bitmap.close()
+  }
+}
+
 const boliviaDateInput = () => {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/La_Paz',
@@ -208,6 +257,7 @@ export default function Page() {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
+  const [categoryOptions, setCategoryOptions] = useState<Category[]>([])
   const [ingredients, setIngredients] = useState<Ingredient[]>([])
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
   const [cash, setCash] = useState<CashData | null>(null)
@@ -234,7 +284,7 @@ export default function Page() {
   const [saleModal, setSaleModal] = useState(false)
   const [saleSubmitting, setSaleSubmitting] = useState(false)
   const saleInProgress = useRef(false)
-  const [saleServiceType, setSaleServiceType] = useState<'takeaway' | 'dine_in'>('takeaway')
+  const [saleServiceType, setSaleServiceType] = useState<'takeaway' | 'dine_in'>('dine_in')
   const [saleCustomerName, setSaleCustomerName] = useState('')
   const [saleTableNumber, setSaleTableNumber] = useState('')
   const [printTicket, setPrintTicket] = useState<Sale | null>(null)
@@ -267,15 +317,17 @@ export default function Page() {
         section === 'Reportes'
           ? `/api/dashboard?range=${reportRange}&date=${encodeURIComponent(reportDate)}`
           : '/api/dashboard'
-      const [dashboardData, productData, ingredientData, cashData, restaurantData] = await Promise.all([
+      const [dashboardData, productData, categoryData, ingredientData, cashData, restaurantData] = await Promise.all([
         api<DashboardData>(dashboardPath),
         api<Product[]>('/api/products'),
+        api<Category[]>('/api/categories'),
         api<Ingredient[]>('/api/ingredients'),
         api<CashData>('/api/cash'),
         api<RestaurantSettings>('/api/settings'),
       ])
       setDashboard(dashboardData)
       setProducts(productData)
+      setCategoryOptions(categoryData)
       setIngredients(ingredientData)
       setCash(cashData)
       setSettings(restaurantData)
@@ -450,7 +502,7 @@ export default function Page() {
       })
       setError('')
       void reload()
-      notify('Venta registrada. Preparando comanda para imprimir.')
+      notify('Pedido registrado. Preparando comanda para imprimir.')
       setPrintTicket(ticket)
       saleRequest.current = null
       setOrder([])
@@ -459,7 +511,7 @@ export default function Page() {
       setSaleCustomerName('')
       setSaleTableNumber('')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'No se pudo registrar la venta.')
+      setError(cause instanceof Error ? cause.message : 'No se pudo registrar el pedido.')
     } finally {
       saleInProgress.current = false
       setSaleSubmitting(false)
@@ -475,6 +527,10 @@ export default function Page() {
       isNew ? 'Plato creado.' : 'Plato actualizado.',
     )
     if (saved) setEditingProduct(undefined)
+  }
+
+  async function saveCategory(name: string) {
+    return save('/api/categories', 'POST', { name }, 'Categoría creada.')
   }
 
   async function deleteProduct(product: Product) {
@@ -544,7 +600,7 @@ export default function Page() {
   }).format(new Date())
   const visibleNavigation = user?.role === 'admin'
     ? navigation
-    : navigation.filter(item => ['Inicio', 'Nueva venta', 'Ventas', 'Caja'].includes(item.label))
+    : navigation.filter(item => ['Inicio', 'Pedidos', 'Ventas', 'Caja'].includes(item.label))
 
   if (!loading && !user) {
     return <Login error={error} onLogin={() => void reload()} />
@@ -587,11 +643,6 @@ export default function Page() {
             >
               <Icon aria-hidden="true" className="size-[18px]" />
               {label}
-              {label === 'Nueva venta' && (
-                <span className="ml-auto rounded-full bg-[#f97316] px-2 py-0.5 text-[10px] font-bold text-white">
-                  POS
-                </span>
-              )}
             </button>
           ))}
         </nav>
@@ -688,12 +739,12 @@ export default function Page() {
           {!loading && section === 'Inicio' && (
             <Dashboard
               data={dashboard}
-              onSell={() => setSection('Nueva venta')}
+              onSell={() => setSection('Pedidos')}
               onReports={() => setSection('Reportes')}
               onHistory={() => setSection('Ventas')}
             />
           )}
-          {!loading && section === 'Nueva venta' && (
+          {!loading && section === 'Pedidos' && (
             <POS
               products={visibleProducts}
               categories={categories}
@@ -709,7 +760,7 @@ export default function Page() {
               onConfirm={() => {
                 setSalePayment('cash')
                 setCashReceived(orderTotal.toFixed(2))
-                setSaleServiceType('takeaway')
+                setSaleServiceType('dine_in')
                 setSaleCustomerName('')
                 setSaleTableNumber('')
                 setSaleModal(true)
@@ -724,6 +775,14 @@ export default function Page() {
               onAdd={() => setEditingProduct(null)}
               onEdit={setEditingProduct}
               onDelete={deleteProduct}
+            />
+          )}
+          {!loading && section === 'Categorías' && (
+            <CategoryManagement
+              categories={categoryOptions}
+              onCreate={saveCategory}
+              saving={saving}
+              error={error}
             />
           )}
           {!loading && section === 'Ingredientes' && (
@@ -788,6 +847,7 @@ export default function Page() {
       {editingProduct !== undefined && (
         <ProductForm
           product={editingProduct}
+          categories={categoryOptions.map(category => category.name)}
           ingredients={ingredients}
           onClose={() => setEditingProduct(undefined)}
           onSave={saveProduct}
@@ -822,7 +882,7 @@ export default function Page() {
         />
       )}
       {printTicket && (
-        <Dialog title={`Comanda de la venta #${printTicket.id}`} onClose={closePrintTicket}>
+        <Dialog title={`Comanda del pedido #${printTicket.id}`} onClose={closePrintTicket}>
           <p className="text-sm text-[#746b64]">La comanda está lista. Si cancelaste el diálogo de impresión, puedes imprimirla nuevamente.</p>
           <div className="mt-5 flex gap-3">
             <Button variant="outline" onClick={printTicketNow} className="h-11 flex-1 rounded-xl">
@@ -902,7 +962,7 @@ export default function Page() {
             {printTicket.status === 'cancelled' && (
               <p className="ticket-cancelled">ANULADA · {printTicket.cancellationReason}</p>
             )}
-            <p>Venta #{printTicket.id}</p>
+            <p>Pedido #{printTicket.id}</p>
             <p>{dateTime(printTicket.createdAt)}</p>
             <p>Atendió: {user?.name}</p>
             <p>{printTicket.serviceType === 'dine_in' ? 'COMER AQUÍ' : printTicket.serviceType === 'takeaway' ? 'PARA LLEVAR' : 'MODALIDAD NO REGISTRADA'}</p>
@@ -1000,7 +1060,7 @@ function Dashboard({
       eyebrow={`Buenos días · ${new Intl.DateTimeFormat('es-BO', { timeZone: 'America/La_Paz', hour: '2-digit', minute: '2-digit' }).format(new Date())}`}
       action={
         <Button onClick={onSell} className="rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
-          <Plus data-icon="inline-start" /> Nueva venta
+          <Plus data-icon="inline-start" /> Nuevo pedido
         </Button>
       }
     >
@@ -1102,8 +1162,8 @@ function POS({
 }) {
   return (
     <Shell
-      title="Nueva venta"
-      eyebrow="Punto de venta"
+      title="Pedidos"
+      eyebrow="Toma de pedidos"
       action={
         <span className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs">
           <Clock3 aria-hidden="true" className="size-4 text-[#f97316]" /> Pedido nuevo
@@ -1146,8 +1206,12 @@ function POS({
                   onClick={() => onProduct(product)}
                   className="group min-w-0 rounded-2xl border border-[#ece8e3] bg-white p-3 text-left hover:border-[#f97316] hover:shadow-lg hover:shadow-orange-100"
                 >
-                  <div className="mb-3 flex h-24 items-center justify-center rounded-xl bg-[#fff1e6] text-[#f97316] sm:h-28">
-                    <UtensilsCrossed aria-hidden="true" className="size-9 opacity-60" />
+                  <div className="mb-3 flex h-24 items-center justify-center overflow-hidden rounded-xl bg-[#fff1e6] text-[#f97316] sm:h-28">
+                    {product.imageUrl ? (
+                      <img src={product.imageUrl} alt={product.name} className="size-full object-cover" />
+                    ) : (
+                      <UtensilsCrossed aria-hidden="true" className="size-9 opacity-60" />
+                    )}
                   </div>
                   <p className="truncate text-sm font-bold">{product.name}</p>
                   <p className="mt-1 truncate text-xs text-[#aaa199]">{product.category}</p>
@@ -1193,16 +1257,16 @@ function POS({
                       <button
                         aria-label={`Quitar una unidad de ${line.product.name}`}
                         onClick={() => onQty(line.key, -1)}
-                        className="rounded-md border p-1"
+                        className="rounded-md p-1 border-2 border-black/5 hover:border-black"
                       >
-                        <Minus aria-hidden="true" className="size-3" />
+                        <Minus aria-hidden="true" className="size-7" />
                       </button>
                       <button
                         aria-label={`Agregar una unidad de ${line.product.name}`}
                         onClick={() => onQty(line.key, 1)}
-                        className="rounded-md border p-1"
+                        className="rounded-md p-1 border-2 border-black/5 hover:border-black"
                       >
-                        <Plus aria-hidden="true" className="size-3" />
+                        <Plus aria-hidden="true" className="size-7" />
                       </button>
                       <button
                         aria-label={`Eliminar ${line.product.name} del pedido`}
@@ -1231,7 +1295,7 @@ function POS({
             onClick={onConfirm}
             className="mt-4 h-12 w-full rounded-xl bg-[#f97316] font-bold text-white hover:bg-[#ea580c]"
           >
-            Cobrar y confirmar
+            Continuar al cobro
           </Button>
         </section>
       </div>
@@ -1279,7 +1343,18 @@ function ProductManagement({
             <tbody>
               {filtered.map(product => (
                 <tr key={product.id} className="border-t border-[#f3efeb]">
-                  <td className="px-5 py-4 font-semibold">{product.name}</td>
+                  <td className="px-5 py-4 font-semibold">
+                    <div className="flex items-center gap-3">
+                      {product.imageUrl ? (
+                        <img src={product.imageUrl} alt="" className="size-12 rounded-lg object-cover" />
+                      ) : (
+                        <span className="flex size-12 items-center justify-center rounded-lg bg-[#fff1e6] text-[#f97316]">
+                          <UtensilsCrossed aria-hidden="true" className="size-5" />
+                        </span>
+                      )}
+                      {product.name}
+                    </div>
+                  </td>
                   <td className="px-5 py-4 text-[#746b64]">{product.category}</td>
                   <td className="px-5 py-4 text-[#746b64]">{money(product.price)}</td>
                   <td className="px-5 py-4 text-[#746b64]">
@@ -1309,6 +1384,7 @@ function ProductManagement({
                 </div>
                 <StatusBadge active={product.available} />
               </div>
+              {product.imageUrl && <img src={product.imageUrl} alt={`Imagen de ${product.name}`} className="mt-3 h-36 w-full rounded-xl object-cover" />}
               <p className="mt-2 text-xs text-[#958d84]">
                 {product.recipe.length ? `${product.recipe.length} ingredientes incluidos` : 'Sin ingredientes configurados'}
               </p>
@@ -1320,6 +1396,73 @@ function ProductManagement({
           ))}
         </div>
         {!filtered.length && <EmptyState text={search ? 'No hay platos que coincidan con la búsqueda.' : 'Aún no hay platos. Crea el primero para habilitar ventas.'} />}
+      </div>
+    </Shell>
+  )
+}
+
+function CategoryManagement({
+  categories,
+  onCreate,
+  saving,
+  error,
+}: {
+  categories: Category[]
+  onCreate: (name: string) => Promise<boolean>
+  saving: boolean
+  error: string
+}) {
+  const [name, setName] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const isSaving = saving || submitting
+  return (
+    <Shell title="Categorías" eyebrow="Organiza el menú">
+      <form
+        onSubmit={async event => {
+          event.preventDefault()
+          if (isSaving || !name.trim()) return
+          setSubmitting(true)
+          try {
+            if (await onCreate(name.trim())) setName('')
+          } finally {
+            setSubmitting(false)
+          }
+        }}
+        className="mb-5 flex flex-col gap-3 rounded-2xl border border-[#ece8e3] bg-white p-5 sm:flex-row sm:items-end"
+      >
+        <label className="block flex-1 text-sm font-semibold">
+          Nueva categoría
+          <input
+            required
+            maxLength={60}
+            value={name}
+            onChange={event => setName(event.target.value)}
+            placeholder="Ej.: Bebidas"
+            className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] px-3 font-normal outline-none focus:border-[#f97316]"
+          />
+        </label>
+        <Button
+          type="submit"
+          disabled={isSaving || !name.trim()}
+          className="h-11 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]"
+        >
+          {isSaving ? 'Creando categoría…' : <><Plus data-icon="inline-start" /> Crear categoría</>}
+        </Button>
+      </form>
+      {error && <p role="alert" className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</p>}
+      <div className="overflow-hidden rounded-2xl border border-[#ece8e3] bg-white">
+        {categories.length ? (
+          <ul className="divide-y divide-[#f3efeb]">
+            {categories.map(category => (
+              <li key={category.id} className="flex items-center justify-between px-5 py-4">
+                <span className="font-semibold">{category.name}</span>
+                <span className="text-xs text-[#958d84]">Disponible para asignar a platos</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState text="Aún no hay categorías. Crea una para empezar a organizar tus platos." />
+        )}
       </div>
     </Shell>
   )
@@ -1875,45 +2018,136 @@ function SettingsPage({
 }
 
 function Login({ error, onLogin }: { error: string; onLogin: () => void }) {
-  const [email, setEmail] = useState('')
+  const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [loginError, setLoginError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#f8f8f7] p-4">
-      <form
-        className="w-full max-w-md rounded-3xl border border-[#ece8e3] bg-white p-6 shadow-sm sm:p-8"
-        onSubmit={async event => {
-          event.preventDefault()
-          setSubmitting(true)
-          setLoginError('')
-          try {
-            await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })
-            onLogin()
-          } catch (cause) {
-            setLoginError(cause instanceof Error ? cause.message : 'No se pudo iniciar sesión.')
-          } finally {
-            setSubmitting(false)
-          }
-        }}
-      >
-        <div className="mb-6 flex items-center gap-3">
-          <span className="flex size-11 items-center justify-center rounded-xl bg-[#f97316] text-white"><Store /></span>
-          <div><p className="font-bold tracking-widest">RESTAURANTE</p><p className="text-xs text-[#958d84]">Punto de venta</p></div>
-        </div>
-        <h1 className="text-2xl font-bold">Iniciar sesión</h1>
-        <p className="mt-1 text-sm text-[#746b64]">Ingresa con tu cuenta de administrador o cajero.</p>
-        {(loginError || error) && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-800">{loginError || error}</p>}
-        <label className="mt-5 block text-sm font-semibold">Correo electrónico
-          <input type="email" autoComplete="username" required value={email} onChange={event => setEmail(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] px-3 font-normal" />
-        </label>
-        <label className="mt-4 block text-sm font-semibold">Contraseña
-          <input type="password" autoComplete="current-password" required value={password} onChange={event => setPassword(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] px-3 font-normal" />
-        </label>
-        <Button disabled={submitting} type="submit" className="mt-6 h-11 w-full rounded-xl bg-[#f97316] font-bold text-white hover:bg-[#ea580c]">
-          {submitting ? 'Validando…' : 'Entrar'}
-        </Button>
-      </form>
+    <main className="flex min-h-screen items-center justify-center bg-[#f7f4f0] p-4 sm:p-8">
+      <div className="grid w-full max-w-5xl overflow-hidden rounded-[2rem] border border-[#e9e1d9] bg-white shadow-[0_32px_100px_-45px_rgba(71,42,25,0.35)] lg:min-h-[620px] lg:grid-cols-[1.02fr_0.98fr]">
+        <section className="relative flex min-h-56 flex-col justify-between overflow-hidden bg-[#2c211b] p-7 text-white sm:p-10 lg:min-h-full lg:p-12">
+          <div className="absolute -right-24 -top-24 size-80 rounded-full border border-white/10" />
+          <div className="absolute -right-10 -top-10 size-52 rounded-full border border-[#f97316]/30" />
+          <div className="absolute -bottom-40 -left-24 size-80 rounded-full bg-[#f97316]/10 blur-3xl" />
+          <div className="relative z-10 flex items-center gap-3">
+            <span className="flex size-12 items-center justify-center rounded-2xl bg-[#f97316] text-white shadow-lg shadow-orange-950/30">
+              <Store aria-hidden="true" className="size-6" />
+            </span>
+            <div>
+              <p className="text-sm font-bold tracking-[0.22em]">RESTAURANTE</p>
+              <p className="mt-0.5 text-xs text-white/55">Punto de venta</p>
+            </div>
+          </div>
+          <div className="relative z-10 mt-9 max-w-md lg:mt-0">
+            <span className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/75">
+              <span className="size-1.5 rounded-full bg-[#fb923c]" />
+              Gestión simple, servicio excelente
+            </span>
+            <h1 className="text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">
+              Todo listo para un gran servicio.
+            </h1>
+            <p className="mt-4 max-w-sm text-sm leading-6 text-white/60">
+              Administra tus ventas, pedidos y caja desde un solo lugar.
+            </p>
+          </div>
+          <div className="relative z-10 mt-8 hidden items-center gap-3 border-t border-white/10 pt-5 text-xs text-white/50 lg:flex">
+            <LockKeyhole aria-hidden="true" className="size-4 text-[#fb923c]" />
+            Acceso privado para el equipo del restaurante
+          </div>
+        </section>
+
+        <section className="flex items-center justify-center p-6 sm:p-10 lg:p-14">
+          <form
+            className="w-full max-w-md"
+            onSubmit={async event => {
+              event.preventDefault()
+              if (submitting) return
+              setSubmitting(true)
+              setLoginError('')
+              try {
+                await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ identifier, password }) })
+                onLogin()
+              } catch (cause) {
+                setLoginError(cause instanceof Error ? cause.message : 'No se pudo iniciar sesión.')
+              } finally {
+                setSubmitting(false)
+              }
+            }}
+          >
+            <div className="mb-8 lg:mb-10">
+              <p className="text-sm font-semibold text-[#f97316]">Bienvenido de nuevo</p>
+              <h2 className="mt-2 text-3xl font-bold tracking-tight text-[#29231f]">Iniciar sesión</h2>
+              <p className="mt-2 text-sm leading-6 text-[#81776f]">
+                Ingresa tus datos para acceder al sistema.
+              </p>
+            </div>
+            {(loginError || error) && (
+              <p role="alert" className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                {loginError || error}
+              </p>
+            )}
+            <label htmlFor="login-identifier" className="block text-sm font-semibold text-[#403832]">
+              Usuario o correo electrónico
+            </label>
+            <div className="mt-2 flex h-12 items-center gap-3 rounded-xl border border-[#e8e1da] bg-[#fcfbfa] px-3.5 transition focus-within:border-[#f97316] focus-within:bg-white focus-within:ring-4 focus-within:ring-[#f97316]/10">
+              <Mail aria-hidden="true" className="size-[18px] shrink-0 text-[#a69a90]" />
+              <input
+                id="login-identifier"
+                type="text"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+                value={identifier}
+                onChange={event => setIdentifier(event.target.value)}
+                placeholder="Tu usuario o correo"
+                className="h-full min-w-0 flex-1 bg-transparent text-sm text-[#29231f] outline-none placeholder:text-[#b5aaa1]"
+              />
+            </div>
+            <div className="mt-5 flex items-center justify-between">
+              <label htmlFor="login-password" className="text-sm font-semibold text-[#403832]">Contraseña</label>
+            </div>
+            <div className="mt-2 flex h-12 items-center gap-3 rounded-xl border border-[#e8e1da] bg-[#fcfbfa] px-3.5 transition focus-within:border-[#f97316] focus-within:bg-white focus-within:ring-4 focus-within:ring-[#f97316]/10">
+              <LockKeyhole aria-hidden="true" className="size-[18px] shrink-0 text-[#a69a90]" />
+              <input
+                id="login-password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                placeholder="Ingresa tu contraseña"
+                className="h-full min-w-0 flex-1 bg-transparent text-sm text-[#29231f] outline-none placeholder:text-[#b5aaa1]"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(value => !value)}
+                aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                aria-pressed={showPassword}
+                className="rounded-md p-1 text-[#958d84] transition hover:text-[#5d5148] focus-visible:outline-2 focus-visible:outline-[#f97316]"
+              >
+                {showPassword ? <EyeOff aria-hidden="true" className="size-[18px]" /> : <Eye aria-hidden="true" className="size-[18px]" />}
+              </button>
+            </div>
+            <Button
+              disabled={submitting}
+              type="submit"
+              className="mt-7 h-12 w-full rounded-xl bg-[#f97316] text-sm font-bold text-white shadow-lg shadow-orange-900/15 transition hover:bg-[#ea580c] hover:shadow-orange-900/20"
+            >
+              {submitting ? (
+                <>
+                  <RefreshCw aria-hidden="true" className="size-4 animate-spin" />
+                  Verificando acceso…
+                </>
+              ) : 'Entrar al sistema'}
+            </Button>
+            <p className="mt-6 text-center text-xs text-[#9a8f86]">
+              Si no puedes ingresar, solicita ayuda al administrador del restaurante.
+            </p>
+          </form>
+        </section>
+      </div>
     </main>
   )
 }
@@ -1982,7 +2216,7 @@ function UserManagement({ currentUser }: { currentUser: AuthUser }) {
           <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 py-4">
             <div className="min-w-0">
               <p className="font-semibold">{item.name}{item.id === currentUser.id ? ' (tú)' : ''}</p>
-              <p className="text-sm text-[#746b64]">{item.email} · {item.role === 'admin' ? 'Administrador' : 'Cajero'}</p>
+              <p className="text-sm text-[#746b64]">@{item.username} · {item.email} · {item.role === 'admin' ? 'Administrador' : 'Cajero'}</p>
             </div>
             <div className="flex items-center gap-3">
               <StatusBadge active={item.active} />
@@ -2011,6 +2245,7 @@ function StaffForm({
   saving: boolean
 }) {
   const [name, setName] = useState(user?.name ?? '')
+  const [username, setUsername] = useState(user?.username ?? '')
   const [email, setEmail] = useState(user?.email ?? '')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState<'admin' | 'cashier'>(user?.role ?? 'cashier')
@@ -2019,10 +2254,11 @@ function StaffForm({
     <Dialog title={user ? 'Editar usuario' : 'Crear usuario'} onClose={onClose}>
       <form onSubmit={event => {
         event.preventDefault()
-        onSave({ name, email, password: user && !password ? undefined : password, role, active })
+        onSave({ name, username, email, password: user && !password ? undefined : password, role, active })
       }}>
         <div className="flex flex-col gap-4">
           <FormField label="Nombre" required value={name} onChange={setName} />
+          <FormField label="Usuario" required value={username} onChange={setUsername} placeholder="ej. josue.admin" />
           <FormField label="Correo electrónico" required type="email" value={email} onChange={setEmail} />
           <label className="block text-sm font-semibold">Rol
             <select value={role} onChange={event => setRole(event.target.value as 'admin' | 'cashier')} className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3">
@@ -2119,24 +2355,29 @@ function Customization({
 
 function ProductForm({
   product,
+  categories,
   ingredients,
   onClose,
   onSave,
   saving,
 }: {
   product: Product | null
+  categories: string[]
   ingredients: Ingredient[]
   onClose: () => void
   onSave: (values: Record<string, unknown>) => void
   saving: boolean
 }) {
   const [name, setName] = useState(product?.name ?? '')
-  const [category, setCategory] = useState(product?.category ?? 'Platos')
+  const [category, setCategory] = useState(product?.category ?? categories[0] ?? '')
   const [price, setPrice] = useState(product?.price.toString() ?? '')
   const [available, setAvailable] = useState(product?.available ?? true)
   const [includedIngredientIds, setIncludedIngredientIds] = useState<number[]>(
     product?.recipe.map(line => line.ingredientId) ?? [],
   )
+  const [imageSelection, setImageSelection] = useState<string | null | undefined>(undefined)
+  const [imageError, setImageError] = useState('')
+  const previewImage = imageSelection === undefined ? product?.imageUrl ?? null : imageSelection
   return (
     <Dialog title={product ? 'Editar plato' : 'Nuevo plato'} onClose={onClose}>
       <form
@@ -2148,17 +2389,87 @@ function ProductForm({
             price: Number(price),
             available,
             ingredientIds: includedIngredientIds,
+            ...(imageSelection !== undefined ? { imageData: imageSelection } : {}),
           })
         }}
       >
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField label="Nombre" required value={name} onChange={setName} />
-          <FormField label="Categoría" required value={category} onChange={setCategory} placeholder="Ej.: Platos, Sopas, Bebidas" />
+          <label className="block text-sm font-semibold">
+            Categoría
+            <select
+              required
+              value={category}
+              onChange={event => setCategory(event.target.value)}
+              className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3 font-normal outline-none focus:border-[#f97316]"
+            >
+              <option value="" disabled>Selecciona una categoría</option>
+              {categories.map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
           <FormField label="Precio (Bs)" required type="number" min="0" step="0.01" value={price} onChange={setPrice} />
           <label className="flex items-center gap-3 self-end rounded-xl bg-[#fcfaf8] p-3 text-sm font-semibold">
             <input type="checkbox" checked={available} onChange={event => setAvailable(event.target.checked)} className="size-4 accent-[#f97316]" />
             Disponible para vender
           </label>
+        </div>
+        <div className="mt-5">
+          <label htmlFor="product-reference-image" className="mb-2 block text-sm font-bold">
+            Imagen de referencia
+          </label>
+          <div className="flex flex-col gap-4 rounded-xl border border-dashed border-[#e4dcd4] bg-[#fcfaf8] p-4 sm:flex-row sm:items-center">
+            {previewImage ? (
+              <img src={previewImage} alt={`Vista previa de ${name || 'el plato'}`} className="h-32 w-full rounded-lg object-cover sm:w-40" />
+            ) : (
+              <div className="flex h-32 w-full items-center justify-center rounded-lg bg-[#fff1e6] text-[#f97316] sm:w-40">
+                <ImagePlus aria-hidden="true" className="size-9" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">Sube una foto del plato</p>
+              <p className="mt-1 text-xs text-[#958d84]">JPG, PNG o WebP. La imagen se optimiza automáticamente.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <label
+                  htmlFor="product-reference-image"
+                  className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-lg border border-[#e8e1da] bg-white px-3 text-sm font-semibold text-[#554a42] hover:bg-[#fff7f1]"
+                >
+                  <ImagePlus aria-hidden="true" className="size-4" />
+                  Elegir imagen
+                </label>
+                {previewImage && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setImageSelection(null)
+                      setImageError('')
+                    }}
+                    className="h-9 rounded-lg"
+                  >
+                    Quitar imagen
+                  </Button>
+                )}
+              </div>
+              <input
+                id="product-reference-image"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="sr-only"
+                onChange={async event => {
+                  const file = event.target.files?.[0]
+                  event.target.value = ''
+                  if (!file) return
+                  try {
+                    setImageError('')
+                    setImageSelection(await optimizeProductImage(file))
+                  } catch (cause) {
+                    setImageError(cause instanceof Error ? cause.message : 'No se pudo procesar la imagen.')
+                  }
+                }}
+              />
+              {imageError && <p role="alert" className="mt-2 text-xs text-red-700">{imageError}</p>}
+            </div>
+          </div>
         </div>
         <fieldset className="mt-5">
           <legend className="mb-2 text-sm font-bold">Ingredientes incluidos</legend>
@@ -2268,45 +2579,48 @@ function SaleConfirmation({
 }) {
   const received = Number(cashReceived)
   return (
-    <Dialog title="Confirmar venta" onClose={onCancel}>
+    <Dialog title="Confirmar pedido" onClose={onCancel}>
       <div className="rounded-xl bg-[#fcfaf8] p-4">
-        <div className="flex justify-between text-sm"><span>Total a cobrar</span><b>{money(total)}</b></div>
+        <div className="flex justify-between text-sm"><span>Total del pedido</span><b>{money(total)}</b></div>
         <label className="mt-4 block text-sm font-semibold">
           Tipo de pedido
           <select
             value={serviceType}
-            onChange={event => setServiceType(event.target.value as 'takeaway' | 'dine_in')}
+            onChange={event => setServiceType(event.target.value as 'dine_in' | 'takeaway')}
             className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3"
           >
-            <option value="takeaway">Para llevar</option>
             <option value="dine_in">Comer aquí</option>
+            <option value="takeaway">Para llevar</option>
           </select>
         </label>
-        <label className="mt-4 block text-sm font-semibold">
-          Nombre para llamar
-          <input
-            required
-            maxLength={120}
-            autoComplete="name"
-            value={customerName}
-            onChange={event => setCustomerName(event.target.value)}
-            placeholder="Nombre del cliente"
-            className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3 font-normal"
-          />
-        </label>
-        {serviceType === 'dine_in' && (
-          <label className="mt-4 block text-sm font-semibold">
-            Mesa
+        <div className="flex justify-around gap-4 sm:justify-between flex-wrap">
+          <label className="mt-4 block text-sm font-semibold max-w-[300px] sm:w-auto">
+            Nombre para llamar
             <input
               required
-              maxLength={30}
-              value={tableNumber}
-              onChange={event => setTableNumber(event.target.value)}
-              placeholder="Número o nombre de mesa"
+              maxLength={120}
+              autoComplete="name"
+              value={customerName}
+              onChange={event => setCustomerName(event.target.value)}
+              placeholder="Nombre del cliente"
               className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3 font-normal"
             />
           </label>
-        )}
+          {serviceType === 'dine_in' && (
+            <label className="mt-4 block text-sm font-semibold max-w-[110px] sm:w-auto">
+              Mesa
+              <input
+                required
+                maxLength={30}
+                value={tableNumber}
+                onChange={event => setTableNumber(event.target.value)}
+                placeholder="Número o nombre de mesa"
+                className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3 font-normal"
+              />
+            </label>
+          )}
+        </div>
+
         <label className="mt-4 block text-sm font-semibold">
           Método de pago
           <select value={method} onChange={event => setMethod(event.target.value)} className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-white px-3">
@@ -2333,7 +2647,6 @@ function SaleConfirmation({
           </>
         )}
       </div>
-      <p className="mt-3 text-xs text-[#958d84]">Al confirmar se guardará la venta. Los ingredientes solo se usan para personalizar el pedido, no se descuenta stock.</p>
       <div className="mt-6 flex gap-3">
         <Button variant="outline" onClick={onCancel} className="h-11 flex-1 rounded-xl">Volver al pedido</Button>
         <Button
@@ -2346,7 +2659,7 @@ function SaleConfirmation({
           onClick={onConfirm}
           className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]"
         >
-          {submitting ? 'Registrando…' : 'Confirmar y cobrar'}
+          {submitting ? 'Registrando pedido…' : 'Confirmar pedido y cobrar'}
         </Button>
       </div>
     </Dialog>

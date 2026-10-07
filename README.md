@@ -31,7 +31,13 @@ pnpm db:migrate
 pnpm db:seed
 ```
 
-`db:seed` solo crea los ajustes básicos y el primer administrador; no genera ventas, platos ni inventario ficticio. Para crear el administrador inicial define `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_NAME` y `INITIAL_ADMIN_PASSWORD` (12–128 caracteres). Las migraciones nuevas se crean con `pnpm db:generate`, se revisan y se aplican antes de desplegar el código que las necesita.
+`db:seed` solo crea los ajustes básicos y el primer administrador; no genera ventas, platos ni inventario ficticio. Para crear el administrador inicial define `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_NAME` y `INITIAL_ADMIN_PASSWORD` (12–128 caracteres); `INITIAL_ADMIN_USERNAME` es opcional y, si no se configura, se genera a partir del correo. Las migraciones nuevas se crean con `pnpm db:generate`, se revisan y se aplican antes de desplegar el código que las necesita.
+
+Para vaciar todas las tablas públicas de la aplicación excepto `users`, ejecuta `pnpm resetdb` desde una terminal interactiva. El comando muestra el host/base destino y las tablas afectadas; solo continúa si escribes `RESET`. También elimina las sesiones de inicio de sesión, restablece secuencias y borra ajustes, categorías, platos, ingredientes, pedidos, ventas y datos de caja. Conserva el historial interno de migraciones. Haz primero una copia de seguridad y comprueba que `DATABASE_URL` apunte a la base correcta; esta operación no se puede deshacer.
+
+El administrador puede crear categorías desde la sección **Categorías** y asignarlas a los platos. La migración `0012_demonic_toad.sql` crea el catálogo y conserva las categorías que ya tenían los platos; aplícala antes de desplegar esta versión.
+
+El personal inicia sesión con su usuario o correo electrónico y contraseña. Cada cuenta debe tener un usuario único de 3 a 64 caracteres (letras, números, punto, guion o guion bajo). La migración `0009_bright_redwing.sql` asigna automáticamente un usuario a las cuentas existentes a partir del correo y el ID de la cuenta; revisa el usuario resultante en Configuración → Usuarios y permisos.
 
 ## Datos de pedido y comanda
 
@@ -41,9 +47,11 @@ Al cobrar una venta, el cajero debe elegir `Para llevar` o `Comer aquí` y regis
 
 La sección Reportes permite consultar un día específico, los últimos siete días o el mes en curso. Muestra y exporta los pedidos completados en una tabla con fecha, hora, descripción de los productos, forma de pago, servicio (comer aquí o para llevar) y precio. El detalle de cada producto usa el mismo formato que la comanda reimpresa desde Ventas: cantidad, nombre, ingredientes excluidos, notas e importe por línea. El botón PDF imprime únicamente esa tabla; el CSV compatible con Excel contiene los mismos detalles.
 
+Cada plato puede tener una imagen de referencia JPG, PNG o WebP. Al seleccionarla, la aplicación la optimiza y guarda en PostgreSQL; se muestra en el catálogo y al tomar pedidos. El tamaño almacenado se limita a 900 KB por imagen.
+
 Actualmente no se registran impuestos, descuentos ni comisiones: brutas y netas muestran el total de las ventas completadas y esos conceptos aparecen en cero. Los ingredientes son un catálogo de nombres que se marcan como incluidos en cada plato; no se guarda stock, consumo ni cantidades por receta, y vender o anular un pedido no modifica existencias. La anulación requiere una cuenta administradora y un motivo de al menos cinco caracteres, y excluye el pedido de los ingresos reportados. Para una devolución en efectivo debe haber una caja abierta; el reembolso de pagos por QR, tarjeta o transferencia se realiza manualmente fuera del sistema.
 
-Antes del despliegue, aplica las migraciones pendientes con `pnpm db:migrate`. La migración `0006_shallow_natasha_romanoff.sql` agrega auditoría de anulación y categoría en cada línea de venta; `0007_slim_lady_ursula.sql` agrega el snapshot histórico de inventario; `0008_dry_norman_osborn.sql` permite asociar ingredientes a platos sin cantidades. Los campos históricos de stock y cantidades se conservan en la base por compatibilidad, pero la aplicación ya no los consulta ni modifica.
+Antes del despliegue, aplica las migraciones pendientes con `pnpm db:migrate`. Las migraciones `0006_shallow_natasha_romanoff.sql` a `0009_bright_redwing.sql` agregan auditoría de anulaciones, soporte para ingredientes sin cantidades y usuario de inicio de sesión. `0010_common_mindworm.sql` agrega almacenamiento de imágenes de platos, `0011_married_grey_gargoyle.sql` valida sus metadatos y `0012_demonic_toad.sql` agrega categorías administrables. Los campos históricos de stock y cantidades se conservan en la base por compatibilidad, pero la aplicación ya no los consulta ni modifica.
 
 ## Copias de seguridad
 

@@ -64,6 +64,34 @@
       "when": 1791404250248,
       "tag": "0008_dry_norman_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791405952567,
+      "tag": "0009_bright_redwing",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791407318399,
+      "tag": "0010_common_mindworm",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791407335188,
+      "tag": "0011_married_grey_gargoyle",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791408500078,
+      "tag": "0012_demonic_toad",
+      "breakpoints": true
     }
   ]
 }
