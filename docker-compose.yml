@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=60
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - ssl=on
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - ssl_cert_file=/run/postgresql/server.crt
+      - -c
+      - ssl_key_file=/run/postgresql/server.key
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    mem_limit: 512m
+    ports:
+      - '5432:5432'
+    volumes:
+      - restaurant_db:/var/lib/postgresql/data
+      - ${POSTGRES_SSL_CERT_PATH:?Set POSTGRES_SSL_CERT_PATH in .env}:/run/postgresql/server.crt:ro
+      - ${POSTGRES_SSL_KEY_PATH:?Set POSTGRES_SSL_KEY_PATH in .env}:/run/postgresql/server.key:ro
+      - ./docker/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./docker/postgres/001-create-app-user.sh:/docker-entrypoint-initdb.d/001-create-app-user.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  restaurant_db:
