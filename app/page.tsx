@@ -37,7 +37,7 @@ type Section =
   | 'Caja'
   | 'Reportes'
   | 'Configuración'
-type RecipeLine = { ingredientId: number; name: string; unit: string; quantity: number }
+type RecipeLine = { ingredientId: number; name: string }
 type Product = {
   id: number
   name: string
@@ -50,9 +50,6 @@ type Product = {
 type Ingredient = {
   id: number
   name: string
-  unit: string
-  stock: number
-  lowStock: number
 }
 type OrderLine = {
   key: string
@@ -63,6 +60,7 @@ type OrderLine = {
 }
 type SaleItem = {
   name: string
+  category: string
   quantity: number
   unitPrice: number
   total: number
@@ -72,6 +70,10 @@ type SaleItem = {
 type Sale = {
   id: number
   createdAt: string
+  status: 'completed' | 'cancelled'
+  cancellationReason: string | null
+  cancelledAt: string | null
+  cancelledBy?: number | null
   serviceType: 'takeaway' | 'dine_in' | null
   customerName: string | null
   tableNumber: string | null
@@ -83,16 +85,51 @@ type Sale = {
   items: SaleItem[]
 }
 type DashboardData = {
+  grossSales: number
+  netSales: number
+  discounts: number
+  taxes: number
+  commissions: number
   total: number
   orderCount: number
+  cancelledCount: number
+  cancelledOrders: {
+    id: number
+    createdAt: string
+    cancelledAt: string | null
+    total: number
+    paymentMethod: string
+    serviceType: string | null
+    customerName: string | null
+    tableNumber: string | null
+    reason: string
+    cancelledByName: string
+  }[]
   itemCount: number
   average: number
   bestSeller: { name: string; quantity: number } | null
-  topProducts: { name: string; quantity: number }[]
+  topProducts: { name: string; category: string; quantity: number; total: number }[]
+  lowProducts: { name: string; category: string; quantity: number; total: number }[]
+  categorySales: { category: string; total: number }[]
+  paymentTotals: { cash: number; qr: number; card: number; transfer: number }
+  channels: { dineIn: number; takeaway: number; unspecified: number }
   hourlySales: { hour: number; total: number }[]
-  lowStockCount: number
   cashOpen: boolean
   recentSales: { id: number; createdAt: string; total: number; paymentMethod: string }[]
+  reportOrders: {
+    id: number
+    createdAt: string
+    items: {
+      quantity: number
+      name: string
+      total: number
+      excludedIngredients: string[]
+      note: string | null
+    }[]
+    paymentMethod: string
+    serviceType: string | null
+    total: number
+  }[]
 }
 type CashData = {
   open: boolean
@@ -186,6 +223,8 @@ export default function Page() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const saveInProgress = useRef(false)
   const [posQuery, setPosQuery] = useState('')
   const [posCategory, setPosCategory] = useState('Todos')
   const [order, setOrder] = useState<OrderLine[]>([])
@@ -194,6 +233,7 @@ export default function Page() {
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null | undefined>(undefined)
   const [saleModal, setSaleModal] = useState(false)
   const [saleSubmitting, setSaleSubmitting] = useState(false)
+  const saleInProgress = useRef(false)
   const [saleServiceType, setSaleServiceType] = useState<'takeaway' | 'dine_in'>('takeaway')
   const [saleCustomerName, setSaleCustomerName] = useState('')
   const [saleTableNumber, setSaleTableNumber] = useState('')
@@ -204,9 +244,15 @@ export default function Page() {
   const [cashReceived, setCashReceived] = useState('')
   const [cashModal, setCashModal] = useState<'open' | 'close' | 'movement' | null>(null)
   const [reportRange, setReportRange] = useState('today')
+  const [reportDate, setReportDate] = useState(boliviaDateInput)
   const [sales, setSales] = useState<Sale[]>([])
+  const [salesRefresh, setSalesRefresh] = useState(0)
   const [salesRange, setSalesRange] = useState('today')
   const [search, setSearch] = useState('')
+  const [cancellingSale, setCancellingSale] = useState<Sale | null>(null)
+  const [cancellationReason, setCancellationReason] = useState('')
+  const [cancellingSubmitting, setCancellingSubmitting] = useState(false)
+  const cancellationInProgress = useRef(false)
 
   const reload = useCallback(async () => {
     try {
@@ -217,7 +263,10 @@ export default function Page() {
         setLoading(false)
         return
       }
-      const dashboardPath = section === 'Reportes' ? `/api/dashboard?range=${reportRange}` : '/api/dashboard'
+      const dashboardPath =
+        section === 'Reportes'
+          ? `/api/dashboard?range=${reportRange}&date=${encodeURIComponent(reportDate)}`
+          : '/api/dashboard'
       const [dashboardData, productData, ingredientData, cashData, restaurantData] = await Promise.all([
         api<DashboardData>(dashboardPath),
         api<Product[]>('/api/products'),
@@ -235,7 +284,7 @@ export default function Page() {
     } finally {
       setLoading(false)
     }
-  }, [reportRange, section])
+  }, [reportDate, reportRange, section])
 
   const reloadCashHistory = useCallback(async () => {
     setCashHistoryLoading(true)
@@ -267,9 +316,15 @@ export default function Page() {
   }, [reload, user])
 
   useEffect(() => {
+    const resetPrintMode = () => document.documentElement.classList.remove('printing-ticket', 'printing-report')
+    window.addEventListener('afterprint', resetPrintMode)
+    return () => window.removeEventListener('afterprint', resetPrintMode)
+  }, [])
+
+  useEffect(() => {
     if (!printTicket || autoPrintedSaleId.current === printTicket.id) return
     autoPrintedSaleId.current = printTicket.id
-    const timeout = window.setTimeout(() => window.print(), 250)
+    const timeout = window.setTimeout(printTicketNow, 250)
     return () => window.clearTimeout(timeout)
   }, [printTicket])
 
@@ -289,7 +344,7 @@ export default function Page() {
     loadSales()
     const interval = window.setInterval(loadSales, 30_000)
     return () => window.clearInterval(interval)
-  }, [section, salesRange])
+  }, [salesRefresh, section, salesRange])
 
   const notify = useCallback((message: string) => {
     setNotice(message)
@@ -298,20 +353,39 @@ export default function Page() {
 
   function closePrintTicket() {
     autoPrintedSaleId.current = null
+    document.documentElement.classList.remove('printing-ticket')
     setPrintTicket(null)
+  }
+
+  function printTicketNow() {
+    document.documentElement.classList.remove('printing-report')
+    document.documentElement.classList.add('printing-ticket')
+    window.print()
+  }
+
+  function printReportNow() {
+    document.documentElement.classList.remove('printing-ticket')
+    document.documentElement.classList.add('printing-report')
+    window.print()
   }
 
   const save = useCallback(
     async (path: string, method: string, body: unknown, message: string) => {
+      if (saveInProgress.current) return false
+      saveInProgress.current = true
+      setSaving(true)
       try {
         setError('')
         await api(path, { method, body: JSON.stringify(body) })
-        await reload()
+        void reload()
         notify(message)
         return true
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : 'No se pudo guardar.')
         return false
+      } finally {
+        saveInProgress.current = false
+        setSaving(false)
       }
     },
     [notify, reload],
@@ -345,7 +419,8 @@ export default function Page() {
   }
 
   async function confirmSale() {
-    if (saleSubmitting) return
+    if (saleInProgress.current) return
+    saleInProgress.current = true
     setSaleSubmitting(true)
     const amountReceived = salePayment === 'cash' ? Number(cashReceived) : undefined
     try {
@@ -374,7 +449,7 @@ export default function Page() {
         }),
       })
       setError('')
-      await reload()
+      void reload()
       notify('Venta registrada. Preparando comanda para imprimir.')
       setPrintTicket(ticket)
       saleRequest.current = null
@@ -386,18 +461,9 @@ export default function Page() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'No se pudo registrar la venta.')
     } finally {
+      saleInProgress.current = false
       setSaleSubmitting(false)
     }
-  }
-
-  async function adjustStock(item: Ingredient, delta: number) {
-    const saved = await save(
-      '/api/ingredients',
-      'POST',
-      { action: 'adjust-stock', id: item.id, delta },
-      `Stock de ${item.name} actualizado.`,
-    )
-    if (saved) setEditingIngredient(undefined)
   }
 
   async function saveProduct(values: Record<string, unknown>) {
@@ -431,7 +497,7 @@ export default function Page() {
   async function deleteIngredient(item: Ingredient) {
     if (
       !window.confirm(
-        `¿Eliminar "${item.name}"? También dejará de descontarse de las recetas asociadas; el historial de ventas no cambiará.`,
+        `¿Eliminar "${item.name}"? También se quitará de los platos que lo tengan incluido; el historial de ventas no cambiará.`,
       )
     ) return
     const saved = await save(`/api/ingredients?id=${item.id}`, 'DELETE', undefined, 'Ingrediente eliminado.')
@@ -448,6 +514,28 @@ export default function Page() {
 
   async function saveSettings(values: RestaurantSettings) {
     await save('/api/settings', 'PUT', values, 'Configuración guardada.')
+  }
+
+  async function cancelSale(sale: Sale, reason: string) {
+    if (cancellationInProgress.current) return
+    cancellationInProgress.current = true
+    setCancellingSubmitting(true)
+    try {
+      await api('/api/sales', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: sale.id, reason }),
+      })
+      setCancellingSale(null)
+      setCancellationReason('')
+      setSalesRefresh(current => current + 1)
+      void reload()
+      notify(`Pedido #${sale.id} anulado; caja actualizada.`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'No se pudo anular el pedido.')
+    } finally {
+      cancellationInProgress.current = false
+      setCancellingSubmitting(false)
+    }
   }
 
   const currentDate = new Intl.DateTimeFormat('es-BO', {
@@ -587,6 +675,11 @@ export default function Page() {
               </button>
             </div>
           )}
+          {saving && (
+            <p role="status" className="mx-auto mb-5 max-w-[1400px] rounded-xl bg-[#fff7f1] px-4 py-3 text-sm font-medium text-[#9a3412]">
+              Guardando cambios…
+            </p>
+          )}
           {loading && (
             <p role="status" className="mx-auto max-w-[1400px] py-10 text-center text-sm text-[#746b64]">
               Conectando con la base de datos…
@@ -640,7 +733,6 @@ export default function Page() {
               setSearch={setSearch}
               onAdd={() => setEditingIngredient(null)}
               onEdit={setEditingIngredient}
-              onAdjust={adjustStock}
               onDelete={deleteIngredient}
             />
           )}
@@ -651,6 +743,8 @@ export default function Page() {
               setRange={setSalesRange}
               onPrint={() => window.print()}
               onPrintSale={setPrintTicket}
+              isAdmin={user?.role === 'admin'}
+              onCancelSale={setCancellingSale}
             />
           )}
           {!loading && section === 'Caja' && cash && (
@@ -666,10 +760,17 @@ export default function Page() {
             />
           )}
           {!loading && section === 'Reportes' && (
-            <Reports data={dashboard} range={reportRange} setRange={setReportRange} />
+            <Reports
+              data={dashboard}
+              range={reportRange}
+              setRange={setReportRange}
+              date={reportDate}
+              setDate={setReportDate}
+              onPrint={printReportNow}
+            />
           )}
           {!loading && section === 'Configuración' && (
-            <SettingsPage settings={settings} user={user!} onSave={saveSettings} />
+            <SettingsPage settings={settings} user={user!} onSave={saveSettings} saving={saving} />
           )}
         </div>
       </main>
@@ -690,6 +791,7 @@ export default function Page() {
           ingredients={ingredients}
           onClose={() => setEditingProduct(undefined)}
           onSave={saveProduct}
+          saving={saving}
         />
       )}
       {editingIngredient !== undefined && (
@@ -698,6 +800,7 @@ export default function Page() {
           onClose={() => setEditingIngredient(undefined)}
           onSave={saveIngredient}
           onDelete={editingIngredient ? deleteIngredient : undefined}
+          saving={saving}
         />
       )}
       {saleModal && (
@@ -722,7 +825,7 @@ export default function Page() {
         <Dialog title={`Comanda de la venta #${printTicket.id}`} onClose={closePrintTicket}>
           <p className="text-sm text-[#746b64]">La comanda está lista. Si cancelaste el diálogo de impresión, puedes imprimirla nuevamente.</p>
           <div className="mt-5 flex gap-3">
-            <Button variant="outline" onClick={() => window.print()} className="h-11 flex-1 rounded-xl">
+            <Button variant="outline" onClick={printTicketNow} className="h-11 flex-1 rounded-xl">
               <Printer data-icon="inline-start" /> Imprimir comanda
             </Button>
             <Button onClick={closePrintTicket} className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
@@ -737,7 +840,52 @@ export default function Page() {
           cash={cash}
           onClose={() => setCashModal(null)}
           onSubmit={performCashAction}
+          saving={saving}
         />
+      )}
+      {cancellingSale && (
+        <Dialog
+          title={`Anular pedido #${cancellingSale.id}`}
+          onClose={() => {
+            setCancellingSale(null)
+            setCancellationReason('')
+          }}
+        >
+          <p className="text-sm text-[#746b64]">
+            La anulación no modifica ingredientes. Si fue en efectivo, la devolución se registra como salida de la caja abierta, por lo que debe estar abierta.
+          </p>
+          <label className="mt-4 block text-sm font-semibold">
+            Motivo de anulación
+            <textarea
+              required
+              minLength={5}
+              maxLength={500}
+              value={cancellationReason}
+              onChange={event => setCancellationReason(event.target.value)}
+              className="mt-2 min-h-24 w-full rounded-xl border border-[#ece8e3] p-3 font-normal"
+              placeholder="Explica por qué se anula este pedido"
+            />
+          </label>
+          <div className="mt-5 flex gap-3">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCancellingSale(null)
+                setCancellationReason('')
+              }}
+              className="h-11 flex-1 rounded-xl"
+            >
+              Volver
+            </Button>
+            <Button
+              disabled={cancellationReason.trim().length < 5 || cancellingSubmitting}
+              onClick={() => void cancelSale(cancellingSale, cancellationReason.trim())}
+              className="h-11 flex-1 rounded-xl bg-red-700 text-white hover:bg-red-800"
+            >
+              {cancellingSubmitting ? 'Anulando…' : 'Anular pedido'}
+            </Button>
+          </div>
+        </Dialog>
       )}
       {notice && (
         <div role="status" className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-xl bg-[#29231f] px-4 py-3 text-sm font-medium text-white shadow-xl">
@@ -751,6 +899,9 @@ export default function Page() {
             {settings.address && <p>{settings.address}</p>}
             {settings.phone && <p>{settings.phone}</p>}
             <h2>COMANDA</h2>
+            {printTicket.status === 'cancelled' && (
+              <p className="ticket-cancelled">ANULADA · {printTicket.cancellationReason}</p>
+            )}
             <p>Venta #{printTicket.id}</p>
             <p>{dateTime(printTicket.createdAt)}</p>
             <p>Atendió: {user?.name}</p>
@@ -782,7 +933,7 @@ export default function Page() {
               </>
             )}
           </footer>
-          <p className="ticket-thanks">Gracias por su compra</p>
+          {printTicket.status !== 'cancelled' && <p className="ticket-thanks">Gracias por su compra</p>}
         </div>
       )}
     </div>
@@ -838,7 +989,7 @@ function Dashboard({
     {
       label: 'Estado de caja',
       value: data?.cashOpen ? 'Abierta' : 'Cerrada',
-      detail: data?.lowStockCount ? `${data.lowStockCount} insumos por reponer` : 'Inventario al día',
+      detail: 'Estado de la caja y operaciones',
       icon: Wallet,
     },
   ]
@@ -1120,7 +1271,7 @@ function ProductManagement({
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="bg-[#fcfaf8] text-xs text-[#958d84]">
               <tr>
-                {['Nombre', 'Categoría', 'Precio', 'Receta', 'Estado', 'Acciones'].map(label => (
+                {['Nombre', 'Categoría', 'Precio', 'Ingredientes', 'Estado', 'Acciones'].map(label => (
                   <th key={label} className="px-5 py-3 font-semibold">{label}</th>
                 ))}
               </tr>
@@ -1133,8 +1284,8 @@ function ProductManagement({
                   <td className="px-5 py-4 text-[#746b64]">{money(product.price)}</td>
                   <td className="px-5 py-4 text-[#746b64]">
                     {product.recipe.length
-                      ? product.recipe.map(line => `${line.quantity} ${line.unit} ${line.name}`).join(', ')
-                      : 'Sin receta'}
+                      ? product.recipe.map(line => line.name).join(', ')
+                      : 'Sin ingredientes'}
                   </td>
                   <td className="px-5 py-4"><StatusBadge active={product.available} /></td>
                   <td className="px-5 py-4">
@@ -1159,7 +1310,7 @@ function ProductManagement({
                 <StatusBadge active={product.available} />
               </div>
               <p className="mt-2 text-xs text-[#958d84]">
-                {product.recipe.length ? `${product.recipe.length} ingredientes en receta` : 'Sin receta configurada'}
+                {product.recipe.length ? `${product.recipe.length} ingredientes incluidos` : 'Sin ingredientes configurados'}
               </p>
               <div className="mt-3 flex gap-2">
                 <Button variant="outline" onClick={() => onEdit(product)} className="rounded-lg"><Pencil data-icon="inline-start" /> Editar</Button>
@@ -1180,7 +1331,6 @@ function IngredientManagement({
   setSearch,
   onAdd,
   onEdit,
-  onAdjust,
   onDelete,
 }: {
   ingredients: Ingredient[]
@@ -1188,15 +1338,13 @@ function IngredientManagement({
   setSearch: (value: string) => void
   onAdd: () => void
   onEdit: (ingredient: Ingredient) => void
-  onAdjust: (ingredient: Ingredient, delta: number) => void
   onDelete: (ingredient: Ingredient) => void
 }) {
-  const [adjustments, setAdjustments] = useState<Record<number, string>>({})
   const filtered = ingredients.filter(item => item.name.toLowerCase().includes(search.toLowerCase().trim()))
   return (
     <Shell
       title="Ingredientes"
-      eyebrow="Inventario"
+      eyebrow="Catálogo de ingredientes"
       action={
         <Button onClick={onAdd} className="rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
           <Plus data-icon="inline-start" /> Nuevo ingrediente
@@ -1205,52 +1353,15 @@ function IngredientManagement({
     >
       <SearchInput value={search} onChange={setSearch} placeholder="Buscar ingrediente..." />
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {filtered.map(item => {
-          const low = item.stock <= item.lowStock
-          const amount = Number(adjustments[item.id] ?? '1')
-          return (
-            <article key={item.id} className="rounded-2xl border border-[#ece8e3] bg-white p-5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate font-bold">{item.name}</h3>
-                  <p className="mt-1 text-sm text-[#958d84]">Mínimo: {item.lowStock} {item.unit}</p>
-                </div>
-                <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${low ? 'bg-[#fff1e6] text-[#c2410c]' : 'bg-green-50 text-green-700'}`}>
-                  {low ? 'Reponer' : 'Disponible'}
-                </span>
-              </div>
-              <p className={`mt-5 text-2xl font-bold ${low ? 'text-[#c2410c]' : ''}`}>
-                {item.stock} <span className="text-sm font-medium text-[#958d84]">{item.unit}</span>
-              </p>
-              <div className="mt-4 border-t border-[#f3efeb] pt-4">
-                <label className="block text-xs font-semibold text-[#746b64]">
-                  Cantidad de ajuste ({item.unit})
-                  <input
-                    type="number"
-                    aria-label={`Cantidad para ajustar ${item.name}`}
-                    min="0.001"
-                    step="0.001"
-                    value={adjustments[item.id] ?? '1'}
-                    onChange={event => setAdjustments(current => ({ ...current, [item.id]: event.target.value }))}
-                    className="mt-1 h-9 w-full rounded-lg border border-[#ece8e3] px-3 text-sm font-normal"
-                  />
-                </label>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button variant="outline" onClick={() => onAdjust(item, -amount)} disabled={!amount || amount > item.stock} className="rounded-lg">
-                    <Minus data-icon="inline-start" /> Consumo
-                  </Button>
-                  <Button variant="outline" onClick={() => onAdjust(item, amount)} disabled={!amount} className="rounded-lg">
-                    <Plus data-icon="inline-start" /> Reponer
-                  </Button>
-                  <div className="ml-auto flex gap-1">
-                  <IconButton label={`Editar ${item.name}`} onClick={() => onEdit(item)}><Pencil /></IconButton>
-                  <IconButton label={`Eliminar ${item.name}`} onClick={() => onDelete(item)}><Trash2 /></IconButton>
-                  </div>
-                </div>
-              </div>
-            </article>
-          )
-        })}
+        {filtered.map(item => (
+          <article key={item.id} className="flex items-center justify-between gap-3 rounded-2xl border border-[#ece8e3] bg-white p-4">
+            <h3 className="min-w-0 truncate font-bold">{item.name}</h3>
+            <div className="flex shrink-0 gap-1">
+              <IconButton label={`Editar ${item.name}`} onClick={() => onEdit(item)}><Pencil /></IconButton>
+              <IconButton label={`Eliminar ${item.name}`} onClick={() => onDelete(item)}><Trash2 /></IconButton>
+            </div>
+          </article>
+        ))}
         {!filtered.length && (
           <div className="sm:col-span-2 xl:col-span-3">
             <EmptyState text={search ? 'No hay ingredientes que coincidan con la búsqueda.' : 'Aún no hay ingredientes. Registra insumos y luego asígnalos a las recetas.'} />
@@ -1267,12 +1378,16 @@ function SalesHistory({
   setRange,
   onPrint,
   onPrintSale,
+  isAdmin,
+  onCancelSale,
 }: {
   sales: Sale[]
   range: string
   setRange: (value: string) => void
   onPrint: () => void
   onPrintSale: (sale: Sale) => void
+  isAdmin: boolean
+  onCancelSale: (sale: Sale) => void
 }) {
   const [search, setSearch] = useState('')
   const filtered = sales.filter(sale =>
@@ -1306,9 +1421,9 @@ function SalesHistory({
       <SearchInput value={search} onChange={setSearch} placeholder="Buscar por número o plato..." />
       <div className="mt-4 overflow-hidden rounded-2xl border border-[#ece8e3] bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[780px] text-left text-sm">
+          <table className="w-full min-w-[1000px] text-left text-sm">
             <thead className="bg-[#fcfaf8] text-xs text-[#958d84]">
-              <tr>{['Venta', 'Fecha y hora', 'Productos', 'Pago', 'Total', 'Comanda'].map(label => <th key={label} className="px-5 py-3 font-semibold">{label}</th>)}</tr>
+              <tr>{['Venta', 'Fecha y hora', 'Productos', 'Pago', 'Total', 'Estado', 'Comanda', 'Acción'].map(label => <th key={label} className="px-5 py-3 font-semibold">{label}</th>)}</tr>
             </thead>
             <tbody>
               {filtered.map(sale => (
@@ -1329,9 +1444,22 @@ function SalesHistory({
                   <td className="px-5 py-4 text-[#746b64]">{paymentName(sale.paymentMethod)}</td>
                   <td className="px-5 py-4 font-bold">{money(sale.total)}</td>
                   <td className="px-5 py-4">
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${sale.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
+                      {sale.status === 'cancelled' ? 'Anulado' : 'Completado'}
+                    </span>
+                    {sale.cancellationReason && <p className="mt-2 max-w-48 text-xs text-red-700">{sale.cancellationReason}</p>}
+                  </td>
+                  <td className="px-5 py-4">
                     <Button variant="outline" size="sm" onClick={() => onPrintSale(sale)} aria-label={`Reimprimir comanda de la venta ${sale.id}`}>
                       <Printer data-icon="inline-start" /> Reimprimir
                     </Button>
+                  </td>
+                  <td className="px-5 py-4">
+                    {isAdmin && sale.status === 'completed' && (
+                      <Button variant="outline" size="sm" onClick={() => onCancelSale(sale)} className="text-red-700">
+                        Anular
+                      </Button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1543,22 +1671,53 @@ function Reports({
   data,
   range,
   setRange,
+  date,
+  setDate,
+  onPrint,
 }: {
   data: DashboardData | null
   range: string
   setRange: (value: string) => void
+  date: string
+  setDate: (value: string) => void
+  onPrint: () => void
 }) {
-  const max = Math.max(1, ...(data?.hourlySales.map(item => item.total) ?? [1]))
+  const reportDate = (createdAt: string) =>
+    new Intl.DateTimeFormat('es-BO', {
+      dateStyle: 'short',
+      timeZone: 'America/La_Paz',
+    }).format(new Date(createdAt))
+  const reportTime = (createdAt: string) =>
+    new Intl.DateTimeFormat('es-BO', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'America/La_Paz',
+    }).format(new Date(createdAt))
+  const reportOrders = data?.reportOrders ?? []
+  const reportTotal = reportOrders.reduce((total, order) => total + order.total, 0)
+
   const downloadCsv = () => {
-    const rows = [
-      ['Hora', 'Ventas (Bs)'],
-      ...(data?.hourlySales.map(item => [`${item.hour}:00`, item.total.toFixed(2)]) ?? []),
+    const exportRows = [
+      ['Fecha', 'Hora', 'Descripción del pedido', 'Forma de pago', 'Servicio', 'Precio'],
+      ...reportOrders.map(order => [
+        reportDate(order.createdAt),
+        reportTime(order.createdAt),
+        order.items.map(item => [
+          `${item.quantity} × ${item.name}`,
+          ...(item.excludedIngredients.length ? [`SIN: ${item.excludedIngredients.join(', ')}`] : []),
+          ...(item.note ? [`Nota: ${item.note}`] : []),
+        ].join('\n')).join('\n'),
+        paymentName(order.paymentMethod),
+        order.serviceType === 'dine_in' ? 'Comer aquí' : order.serviceType === 'takeaway' ? 'Para llevar' : 'Sin registrar',
+        order.total.toFixed(2),
+      ]),
+      ['TOTAL DEL PERIODO', '', '', '', '', reportTotal.toFixed(2)],
     ]
-    const csv = `\uFEFF${rows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(';')).join('\r\n')}`
+    const csv = `\uFEFF${exportRows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(';')).join('\r\n')}`
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = `reporte-${range}-${new Date().toISOString().slice(0, 10)}.csv`
+    link.download = `pedidos-${range}-${range === 'today' ? date : new Date().toISOString().slice(0, 10)}.csv`
     link.click()
     URL.revokeObjectURL(url)
   }
@@ -1567,59 +1726,108 @@ function Reports({
       title="Reportes"
       eyebrow="Análisis del negocio"
       action={
-        <select aria-label="Periodo del reporte" value={range} onChange={event => setRange(event.target.value)} className="rounded-xl border border-[#ece8e3] bg-white px-3 py-2 text-sm">
-          <option value="today">Hoy</option><option value="week">Últimos 7 días</option><option value="month">Este mes</option>
-        </select>
+        <div className="flex flex-wrap items-end gap-3">
+          {range === 'today' && (
+            <label className="text-xs font-semibold text-[#746b64]">
+              Día
+              <input
+                type="date"
+                value={date}
+                onChange={event => {
+                  if (event.target.value) setDate(event.target.value)
+                }}
+                className="mt-1 block h-10 rounded-xl border border-[#ece8e3] bg-white px-3 text-sm font-normal"
+              />
+            </label>
+          )}
+          <select aria-label="Periodo del reporte" value={range} onChange={event => setRange(event.target.value)} className="h-10 rounded-xl border border-[#ece8e3] bg-white px-3 text-sm">
+            <option value="today">Día</option><option value="week">Últimos 7 días</option><option value="month">Este mes</option>
+          </select>
+        </div>
       }
     >
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Ventas totales" value={money(data?.total ?? 0)} />
-        <Metric label="Pedidos" value={String(data?.orderCount ?? 0)} />
-        <Metric label="Platos vendidos" value={String(data?.itemCount ?? 0)} />
-        <Metric label="Ticket promedio" value={money(data?.average ?? 0)} />
-      </div>
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <section className="min-w-0 rounded-2xl border border-[#ece8e3] bg-white p-5 sm:p-6">
-          <h3 className="font-bold">Ventas por hora</h3>
-          <div className="mt-6 flex h-56 min-w-0 items-end gap-1 sm:gap-3">
-            {data?.hourlySales.map(item => (
-              <div key={item.hour} className="flex min-w-0 flex-1 flex-col items-center gap-2">
-                <span className="hidden text-[9px] text-[#aaa199] sm:block">{money(item.total)}</span>
-                <div
-                  title={`${item.hour}:00 · ${money(item.total)}`}
-                  className="w-full rounded-t-md bg-[#f97316]"
-                  style={{ height: `${Math.max(2, (item.total / max) * 85)}%` }}
-                />
-                <span className="whitespace-nowrap text-[9px] text-[#aaa199]">{item.hour}:00</span>
-              </div>
-            ))}
-            {!data?.hourlySales.length && <p className="w-full self-center text-center text-sm text-[#958d84]">Sin ventas en este periodo.</p>}
-          </div>
-        </section>
-        <section className="rounded-2xl border border-[#ece8e3] bg-white p-5 sm:p-6">
-          <h3 className="font-bold">Platos más vendidos</h3>
-          <div className="mt-6 flex flex-col gap-4">
-            {data?.topProducts.length ? data.topProducts.map(item => {
-              const maximum = Math.max(1, ...data.topProducts.map(product => product.quantity))
-              return (
-                <div key={item.name}>
-                  <div className="mb-2 flex justify-between gap-3 text-sm">
-                    <b className="truncate">{item.name}</b><span className="shrink-0 text-[#958d84]">{item.quantity} unidades</span>
+      <p className="mb-3 text-sm font-semibold text-[#746b64]">
+        Periodo: {range === 'today' ? date : range === 'week' ? 'Últimos 7 días' : 'Este mes'}
+      </p>
+      <div className="report-print-area">
+        <ReportTable
+          headers={['Fecha', 'Hora', 'Descripción del pedido', 'Forma de pago', 'Para comer aquí o llevar', 'Precio']}
+          rows={reportOrders.map(order => [
+            reportDate(order.createdAt),
+            reportTime(order.createdAt),
+            <div className="report-order-items" key={`order-${order.id}`}>
+              {order.items.map((item, index) => (
+                <div className="report-order-item" key={`${order.id}-${index}`}>
+                  <div className="report-order-item-heading">
+                    <strong>{item.quantity} × {item.name}</strong>
+                    <strong>{money(item.total)}</strong>
                   </div>
-                  <div className="h-2 rounded-full bg-[#fff0e5]">
-                    <div className="h-2 rounded-full bg-[#f97316]" style={{ width: `${(item.quantity / maximum) * 100}%` }} />
-                  </div>
+                  {item.excludedIngredients.length > 0 && (
+                    <p className="report-order-modification">SIN: {item.excludedIngredients.join(', ')}</p>
+                  )}
+                  {item.note && <p className="report-order-note">Nota: {item.note}</p>}
                 </div>
-              )
-            }) : <p className="py-8 text-center text-sm text-[#958d84]">Los platos más vendidos aparecerán al registrar ventas.</p>}
-          </div>
-        </section>
+              ))}
+              {!order.items.length && <span>Sin detalle de productos</span>}
+            </div>,
+            paymentName(order.paymentMethod),
+            order.serviceType === 'dine_in'
+              ? 'Comer aquí'
+              : order.serviceType === 'takeaway'
+                ? 'Para llevar'
+                : 'Sin registrar',
+            money(order.total),
+          ])}
+          summary={money(reportTotal)}
+        />
       </div>
       <div className="mt-5 flex flex-wrap gap-3">
-        <Button variant="outline" onClick={() => window.print()} className="rounded-xl"><Printer data-icon="inline-start" /> Imprimir / Guardar PDF</Button>
-        <Button variant="outline" onClick={downloadCsv} className="rounded-xl"><Download data-icon="inline-start" /> Exportar CSV para Excel</Button>
+        <Button variant="outline" onClick={onPrint} className="rounded-xl"><Printer data-icon="inline-start" /> Exportar PDF</Button>
+        <Button variant="outline" onClick={downloadCsv} className="rounded-xl"><Download data-icon="inline-start" /> Exportar para Excel (CSV)</Button>
       </div>
     </Shell>
+  )
+}
+
+function ReportTable({
+  headers,
+  rows,
+  summary,
+}: {
+  headers: string[]
+  rows: React.ReactNode[][]
+  summary?: string
+}) {
+  return (
+    <div className="report-table-wrap mt-4 overflow-x-auto">
+      <table className="report-table w-full min-w-max text-left text-sm">
+        <thead>
+          <tr>
+            {headers.map(header => <th key={header} scope="col">{header}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((value, columnIndex) => <td key={columnIndex}>{value || '—'}</td>)}
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr>
+              <td colSpan={headers.length}>Sin datos para este periodo.</td>
+            </tr>
+          )}
+        </tbody>
+        {summary !== undefined && (
+          <tfoot>
+            <tr>
+              <th scope="row" colSpan={headers.length - 1}>TOTAL DEL PERIODO</th>
+              <th className="report-total-value">{summary}</th>
+            </tr>
+          </tfoot>
+        )}
+      </table>
+    </div>
   )
 }
 
@@ -1627,10 +1835,12 @@ function SettingsPage({
   settings,
   user,
   onSave,
+  saving,
 }: {
   settings: RestaurantSettings
   user: AuthUser
   onSave: (settings: RestaurantSettings) => void
+  saving: boolean
 }) {
   const [values, setValues] = useState(settings)
   useEffect(() => setValues(settings), [settings])
@@ -1653,7 +1863,9 @@ function SettingsPage({
           </label>
         </div>
         <p className="mt-5 text-xs text-[#958d84]">El nombre y contacto se guardan en PostgreSQL y se aplican a las ventas futuras.</p>
-        <Button type="submit" className="mt-6 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">Guardar cambios</Button>
+        <Button disabled={saving} type="submit" className="mt-6 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
+          {saving ? 'Guardando…' : 'Guardar cambios'}
+        </Button>
       </form>
       <div className="mt-6 max-w-3xl">
         <UserManagement currentUser={user} />
@@ -1709,6 +1921,8 @@ function Login({ error, onLogin }: { error: string; onLogin: () => void }) {
 function UserManagement({ currentUser }: { currentUser: AuthUser }) {
   const [users, setUsers] = useState<StaffUser[]>([])
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const saveInProgress = useRef(false)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<StaffUser | null | undefined>(undefined)
   const [notice, setNotice] = useState('')
@@ -1730,6 +1944,9 @@ function UserManagement({ currentUser }: { currentUser: AuthUser }) {
   }, [reloadUsers])
 
   async function saveUser(values: Record<string, unknown>) {
+    if (saveInProgress.current) return
+    saveInProgress.current = true
+    setSaving(true)
     try {
       if (editing) {
         await api('/api/users', { method: 'PUT', body: JSON.stringify({ ...values, id: editing.id }) })
@@ -1738,9 +1955,12 @@ function UserManagement({ currentUser }: { currentUser: AuthUser }) {
       }
       setEditing(undefined)
       setNotice(editing ? 'Cuenta actualizada.' : 'Cuenta creada.')
-      await reloadUsers()
+      void reloadUsers()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'No se pudo guardar la cuenta.')
+    } finally {
+      saveInProgress.current = false
+      setSaving(false)
     }
   }
 
@@ -1773,7 +1993,7 @@ function UserManagement({ currentUser }: { currentUser: AuthUser }) {
         {!loading && users.length === 0 && <p className="py-5 text-sm text-[#958d84]">No hay usuarios registrados.</p>}
       </div>
       {editing !== undefined && (
-        <StaffForm user={editing} onClose={() => setEditing(undefined)} onSave={saveUser} />
+        <StaffForm user={editing} onClose={() => setEditing(undefined)} onSave={saveUser} saving={saving} />
       )}
     </section>
   )
@@ -1783,10 +2003,12 @@ function StaffForm({
   user,
   onClose,
   onSave,
+  saving,
 }: {
   user: StaffUser | null
   onClose: () => void
   onSave: (values: Record<string, unknown>) => void
+  saving: boolean
 }) {
   const [name, setName] = useState(user?.name ?? '')
   const [email, setEmail] = useState(user?.email ?? '')
@@ -1830,7 +2052,9 @@ function StaffForm({
         </div>
         <div className="mt-6 flex gap-3">
           <Button type="button" variant="outline" onClick={onClose} className="h-11 flex-1 rounded-xl">Cancelar</Button>
-          <Button type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">Guardar</Button>
+          <Button disabled={saving} type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
+            {saving ? 'Guardando…' : 'Guardar'}
+          </Button>
         </div>
       </form>
     </Dialog>
@@ -1870,7 +2094,7 @@ function Customization({
         </fieldset>
       ) : (
         <p className="mb-4 rounded-xl bg-[#fff7f1] p-3 text-sm text-[#8f8278]">
-          Este plato aún no tiene una receta vinculada al inventario.
+          Este plato aún no tiene ingredientes configurados.
         </p>
       )}
       <label className="mt-5 block text-sm font-bold">
@@ -1898,18 +2122,20 @@ function ProductForm({
   ingredients,
   onClose,
   onSave,
+  saving,
 }: {
   product: Product | null
   ingredients: Ingredient[]
   onClose: () => void
   onSave: (values: Record<string, unknown>) => void
+  saving: boolean
 }) {
   const [name, setName] = useState(product?.name ?? '')
   const [category, setCategory] = useState(product?.category ?? 'Platos')
   const [price, setPrice] = useState(product?.price.toString() ?? '')
   const [available, setAvailable] = useState(product?.available ?? true)
-  const [recipe, setRecipe] = useState<Record<number, string>>(
-    Object.fromEntries(product?.recipe.map(line => [line.ingredientId, String(line.quantity)]) ?? []),
+  const [includedIngredientIds, setIncludedIngredientIds] = useState<number[]>(
+    product?.recipe.map(line => line.ingredientId) ?? [],
   )
   return (
     <Dialog title={product ? 'Editar plato' : 'Nuevo plato'} onClose={onClose}>
@@ -1921,9 +2147,7 @@ function ProductForm({
             category,
             price: Number(price),
             available,
-            recipe: Object.entries(recipe)
-              .filter(([, quantity]) => Number(quantity) > 0)
-              .map(([ingredientId, quantity]) => ({ ingredientId: Number(ingredientId), quantity: Number(quantity) })),
+            ingredientIds: includedIngredientIds,
           })
         }}
       >
@@ -1937,33 +2161,35 @@ function ProductForm({
           </label>
         </div>
         <fieldset className="mt-5">
-          <legend className="mb-2 text-sm font-bold">Receta e inventario por porción</legend>
-          <p className="mb-3 text-xs text-[#958d84]">Define cuánto descuenta cada venta. Las cantidades usan la unidad de cada ingrediente.</p>
+          <legend className="mb-2 text-sm font-bold">Ingredientes incluidos</legend>
+          <p className="mb-3 text-xs text-[#958d84]">Marca los ingredientes que lleva este plato. No se registra ni descuenta stock.</p>
           {ingredients.length ? (
             <div className="max-h-56 overflow-y-auto rounded-xl border border-[#ece8e3]">
               {ingredients.map(item => (
-                <label key={item.id} className="flex items-center justify-between gap-3 border-b border-[#f3efeb] p-3 text-sm last:border-0">
-                  <span className="min-w-0 truncate">{item.name} <span className="text-xs text-[#958d84]">({item.unit})</span></span>
+                <label key={item.id} className="flex cursor-pointer items-center gap-3 border-b border-[#f3efeb] p-3 text-sm last:border-0">
                   <input
-                    type="number"
-                    min="0"
-                    step="0.001"
-                    aria-label={`Cantidad de ${item.name} por plato`}
-                    value={recipe[item.id] ?? ''}
-                    onChange={event => setRecipe(current => ({ ...current, [item.id]: event.target.value }))}
-                    placeholder="No incluido"
-                    className="h-9 w-32 shrink-0 rounded-lg border border-[#ece8e3] px-2 text-right outline-none focus:border-[#f97316]"
+                    type="checkbox"
+                    checked={includedIngredientIds.includes(item.id)}
+                    onChange={() => setIncludedIngredientIds(current =>
+                      current.includes(item.id)
+                        ? current.filter(id => id !== item.id)
+                        : [...current, item.id],
+                    )}
+                    className="size-4 accent-[#f97316]"
                   />
+                  {item.name}
                 </label>
               ))}
             </div>
           ) : (
-            <p className="rounded-xl bg-[#fff7f1] p-3 text-sm text-[#8f8278]">Primero registra ingredientes para configurar el descuento automático de stock.</p>
+            <p className="rounded-xl bg-[#fff7f1] p-3 text-sm text-[#8f8278]">Primero registra ingredientes para seleccionarlos en el plato.</p>
           )}
         </fieldset>
         <div className="mt-6 flex gap-3">
           <Button type="button" variant="outline" onClick={onClose} className="h-11 flex-1 rounded-xl">Cancelar</Button>
-          <Button type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">Guardar plato</Button>
+          <Button disabled={saving} type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
+            {saving ? 'Guardando…' : 'Guardar plato'}
+          </Button>
         </div>
       </form>
     </Dialog>
@@ -1975,40 +2201,33 @@ function IngredientForm({
   onClose,
   onSave,
   onDelete,
+  saving,
 }: {
   ingredient: Ingredient | null
   onClose: () => void
   onSave: (values: Record<string, unknown>) => void
   onDelete?: (ingredient: Ingredient) => void
+  saving: boolean
 }) {
   const [name, setName] = useState(ingredient?.name ?? '')
-  const [unit, setUnit] = useState(ingredient?.unit ?? 'kg')
-  const [stock, setStock] = useState(ingredient?.stock.toString() ?? '0')
-  const [lowStock, setLowStock] = useState(ingredient?.lowStock.toString() ?? '0')
   return (
     <Dialog title={ingredient ? 'Editar ingrediente' : 'Nuevo ingrediente'} onClose={onClose}>
       <form
         onSubmit={event => {
           event.preventDefault()
-          onSave({ name, unit, stock: Number(stock), lowStock: Number(lowStock) })
+          onSave({ name })
         }}
       >
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormField label="Nombre" required value={name} onChange={setName} />
-          <FormField label="Unidad" required value={unit} onChange={setUnit} placeholder="kg, L, unidad..." />
-          {!ingredient && <FormField label="Stock inicial" type="number" min="0" step="0.001" value={stock} onChange={setStock} />}
-          <FormField label="Avisar cuando llegue a" type="number" min="0" step="0.001" value={lowStock} onChange={setLowStock} />
-        </div>
-        {ingredient && (
-          <p className="mt-4 text-xs text-[#958d84]">
-            Stock actual: {ingredient.stock} {ingredient.unit}. Usa los controles de inventario para ajustar existencias.
-          </p>
-        )}
+        <FormField label="Nombre del ingrediente" required value={name} onChange={setName} />
         <div className="mt-6 flex flex-wrap gap-3">
           <Button type="button" variant="outline" onClick={onClose} className="h-11 flex-1 rounded-xl">Cancelar</Button>
-          <Button type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">Guardar ingrediente</Button>
+          <Button disabled={saving} type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
+            {saving ? 'Guardando…' : 'Guardar ingrediente'}
+          </Button>
           {ingredient && onDelete && (
-            <Button type="button" variant="outline" onClick={() => onDelete(ingredient)} className="h-11 rounded-xl text-red-700">Eliminar</Button>
+            <Button disabled={saving} type="button" variant="outline" onClick={() => onDelete(ingredient)} className="h-11 rounded-xl text-red-700">
+              {saving ? 'Procesando…' : 'Eliminar'}
+            </Button>
           )}
         </div>
       </form>
@@ -2114,7 +2333,7 @@ function SaleConfirmation({
           </>
         )}
       </div>
-      <p className="mt-3 text-xs text-[#958d84]">Al confirmar se guardará la venta y se descontarán los ingredientes de la receta.</p>
+      <p className="mt-3 text-xs text-[#958d84]">Al confirmar se guardará la venta. Los ingredientes solo se usan para personalizar el pedido, no se descuenta stock.</p>
       <div className="mt-6 flex gap-3">
         <Button variant="outline" onClick={onCancel} className="h-11 flex-1 rounded-xl">Volver al pedido</Button>
         <Button
@@ -2139,11 +2358,13 @@ function CashForm({
   cash,
   onClose,
   onSubmit,
+  saving,
 }: {
   mode: 'open' | 'close' | 'movement'
   cash: CashData
   onClose: () => void
   onSubmit: (values: Record<string, unknown>) => void
+  saving: boolean
 }) {
   const [amount, setAmount] = useState(mode === 'open' ? '0' : '')
   const [description, setDescription] = useState('')
@@ -2197,8 +2418,8 @@ function CashForm({
         )}
         <div className="mt-6 flex gap-3">
           <Button type="button" variant="outline" onClick={onClose} className="h-11 flex-1 rounded-xl">Cancelar</Button>
-          <Button type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
-            {mode === 'open' ? 'Abrir caja' : mode === 'close' ? 'Confirmar cierre' : 'Guardar movimiento'}
+          <Button disabled={saving} type="submit" className="h-11 flex-1 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
+            {saving ? 'Guardando…' : mode === 'open' ? 'Abrir caja' : mode === 'close' ? 'Confirmar cierre' : 'Guardar movimiento'}
           </Button>
         </div>
       </form>

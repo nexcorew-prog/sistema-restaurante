@@ -7,39 +7,32 @@ import { ingredients, productIngredients, products } from '@/lib/db/schema'
 
 export const dynamic = 'force-dynamic'
 
-async function validateRecipe(value: unknown) {
+async function validateIngredientIds(value: unknown) {
   if (!Array.isArray(value) || value.length > 100) {
-    throw new HttpError('La receta debe incluir una lista válida de ingredientes.', 400)
+    throw new HttpError('Selecciona una lista válida de ingredientes.', 400)
   }
   const seen = new Set<number>()
-  const recipe = value.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      throw new HttpError('Un ingrediente de la receta no es válido.', 400)
-    }
-    const item = raw as Record<string, unknown>
-    const ingredientId = Number(item.ingredientId)
-    const quantity = Number(item.quantity)
-    if (
-      !Number.isSafeInteger(ingredientId) ||
-      ingredientId < 1 ||
-      seen.has(ingredientId) ||
-      !Number.isFinite(quantity) ||
-      quantity <= 0 ||
-      quantity > 1_000_000
-    ) {
-      throw new HttpError('Revisa las cantidades de la receta; deben ser positivas y no repetirse.', 400)
+  const ingredientIds = value.map(raw => {
+    const ingredientId =
+      typeof raw === 'number'
+        ? raw
+        : raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? Number((raw as Record<string, unknown>).ingredientId)
+          : NaN
+    if (!Number.isSafeInteger(ingredientId) || ingredientId < 1 || seen.has(ingredientId)) {
+      throw new HttpError('Revisa la selección de ingredientes; no debe haber ingredientes repetidos.', 400)
     }
     seen.add(ingredientId)
-    return { ingredientId, quantity: (Math.round(quantity * 1000) / 1000).toFixed(3) }
+    return ingredientId
   })
-  if (recipe.length) {
+  if (ingredientIds.length) {
     const found = await getDb()
       .select({ id: ingredients.id })
       .from(ingredients)
-      .where(inArray(ingredients.id, recipe.map(item => item.ingredientId)))
-    if (found.length !== recipe.length) throw new HttpError('Un ingrediente de la receta ya no existe.', 409)
+      .where(inArray(ingredients.id, ingredientIds))
+    if (found.length !== ingredientIds.length) throw new HttpError('Un ingrediente seleccionado ya no existe.', 409)
   }
-  return recipe
+  return ingredientIds
 }
 
 async function withRecipe(rows: (typeof products.$inferSelect)[]) {
@@ -49,8 +42,6 @@ async function withRecipe(rows: (typeof products.$inferSelect)[]) {
       productId: productIngredients.productId,
       ingredientId: ingredients.id,
       name: ingredients.name,
-      unit: ingredients.unit,
-      quantity: productIngredients.quantity,
     })
     .from(productIngredients)
     .innerJoin(ingredients, eq(productIngredients.ingredientId, ingredients.id))
@@ -63,10 +54,7 @@ async function withRecipe(rows: (typeof products.$inferSelect)[]) {
     byProduct.set(row.productId, items)
   }
   return rows.map(product => {
-    const recipe = (byProduct.get(product.id) ?? []).map(({ productId: _productId, ...item }) => ({
-      ...item,
-      quantity: Number(item.quantity),
-    }))
+    const recipe = (byProduct.get(product.id) ?? []).map(({ productId: _productId, ...item }) => item)
     return {
       ...product,
       price: product.priceCents / 100,
@@ -93,15 +81,15 @@ export async function POST(request: Request) {
     const name = requiredText(body.name, 'El nombre')
     const category = requiredText(body.category, 'La categoría', 60)
     const priceCents = moneyToCents(body.price)
-    const recipe = await validateRecipe(body.recipe)
+    const ingredientIds = await validateIngredientIds(body.ingredientIds ?? body.recipe)
     const created = await getDb().transaction(async tx => {
       const [product] = await tx
         .insert(products)
         .values({ name, category, priceCents, available: body.available !== false })
         .returning()
-      if (recipe.length) {
+      if (ingredientIds.length) {
         await tx.insert(productIngredients).values(
-          recipe.map(item => ({ ...item, productId: product.id })),
+          ingredientIds.map(ingredientId => ({ productId: product.id, ingredientId, quantity: null })),
         )
       }
       return product
@@ -121,7 +109,7 @@ export async function PUT(request: Request) {
     const name = requiredText(body.name, 'El nombre')
     const category = requiredText(body.category, 'La categoría', 60)
     const priceCents = moneyToCents(body.price)
-    const recipe = await validateRecipe(body.recipe)
+    const ingredientIds = await validateIngredientIds(body.ingredientIds ?? body.recipe)
     const updated = await getDb().transaction(async tx => {
       const [product] = await tx
         .update(products)
@@ -130,9 +118,9 @@ export async function PUT(request: Request) {
         .returning()
       if (!product) throw new HttpError('No se encontró el producto.', 404)
       await tx.delete(productIngredients).where(eq(productIngredients.productId, id))
-      if (recipe.length) {
+      if (ingredientIds.length) {
         await tx.insert(productIngredients).values(
-          recipe.map(item => ({ ...item, productId: product.id })),
+          ingredientIds.map(ingredientId => ({ productId: product.id, ingredientId, quantity: null })),
         )
       }
       return product

@@ -14,7 +14,11 @@ async function cashSummary(session: typeof cashSessions.$inferSelect) {
     .from(cashMovements)
     .where(eq(cashMovements.cashSessionId, session.id))
     .orderBy(desc(cashMovements.createdAt))
-  const payments = await db.select().from(sales).where(eq(sales.cashSessionId, session.id))
+  const allSessionSales = await db
+    .select()
+    .from(sales)
+    .where(eq(sales.cashSessionId, session.id))
+  const payments = allSessionSales.filter(sale => sale.status === 'completed')
   const paymentTotals = payments.reduce(
     (sum, sale) => {
       if (sale.paymentMethod === 'cash') sum.cash += sale.totalCents
@@ -29,7 +33,10 @@ async function cashSummary(session: typeof cashSessions.$inferSelect) {
   const withdrawals = movements
     .filter(movement => movement.type === 'withdrawal')
     .reduce((sum, movement) => sum + movement.amountCents, 0)
-  const expectedCents = session.openingAmountCents + paymentTotals.cash + additions - withdrawals
+  const cashReceipts = allSessionSales
+    .filter(sale => sale.paymentMethod === 'cash')
+    .reduce((sum, sale) => sum + sale.totalCents, 0)
+  const expectedCents = session.openingAmountCents + cashReceipts + additions - withdrawals
   return {
     session: {
       ...session,
@@ -111,7 +118,10 @@ export async function POST(request: Request) {
           .select()
           .from(cashMovements)
           .where(eq(cashMovements.cashSessionId, session.id))
-        const sessionSales = await tx.select().from(sales).where(eq(sales.cashSessionId, session.id))
+        const sessionSales = await tx
+          .select()
+          .from(sales)
+          .where(eq(sales.cashSessionId, session.id))
         const cashSalesCents = sessionSales
           .filter(sale => sale.paymentMethod === 'cash')
           .reduce((sum, sale) => sum + sale.totalCents, 0)

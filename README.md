@@ -31,11 +31,19 @@ pnpm db:migrate
 pnpm db:seed
 ```
 
-`db:seed` solo crea los ajustes básicos y el primer administrador; no genera ventas, platos ni stock ficticios. Para crear el administrador inicial define `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_NAME` y `INITIAL_ADMIN_PASSWORD` (12–128 caracteres). Las migraciones nuevas se crean con `pnpm db:generate`, se revisan y se aplican antes de desplegar el código que las necesita.
+`db:seed` solo crea los ajustes básicos y el primer administrador; no genera ventas, platos ni inventario ficticio. Para crear el administrador inicial define `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_NAME` y `INITIAL_ADMIN_PASSWORD` (12–128 caracteres). Las migraciones nuevas se crean con `pnpm db:generate`, se revisan y se aplican antes de desplegar el código que las necesita.
 
 ## Datos de pedido y comanda
 
 Al cobrar una venta, el cajero debe elegir `Para llevar` o `Comer aquí` y registrar el nombre para llamar al cliente. Los pedidos para comer aquí también requieren la mesa. Estos datos se guardan con la venta, aparecen en su comanda impresa y se conservan en el historial. Antes de desplegar una versión que incluya cambios de esquema, aplica las migraciones desde un equipo autorizado con `pnpm db:migrate`; en particular, la migración `0005_blue_magdalene.sql` agrega estos campos de forma nullable para conservar el historial previo sin inventar datos.
+
+## Reportes y anulación de pedidos
+
+La sección Reportes permite consultar un día específico, los últimos siete días o el mes en curso. Muestra y exporta los pedidos completados en una tabla con fecha, hora, descripción de los productos, forma de pago, servicio (comer aquí o para llevar) y precio. El detalle de cada producto usa el mismo formato que la comanda reimpresa desde Ventas: cantidad, nombre, ingredientes excluidos, notas e importe por línea. El botón PDF imprime únicamente esa tabla; el CSV compatible con Excel contiene los mismos detalles.
+
+Actualmente no se registran impuestos, descuentos ni comisiones: brutas y netas muestran el total de las ventas completadas y esos conceptos aparecen en cero. Los ingredientes son un catálogo de nombres que se marcan como incluidos en cada plato; no se guarda stock, consumo ni cantidades por receta, y vender o anular un pedido no modifica existencias. La anulación requiere una cuenta administradora y un motivo de al menos cinco caracteres, y excluye el pedido de los ingresos reportados. Para una devolución en efectivo debe haber una caja abierta; el reembolso de pagos por QR, tarjeta o transferencia se realiza manualmente fuera del sistema.
+
+Antes del despliegue, aplica las migraciones pendientes con `pnpm db:migrate`. La migración `0006_shallow_natasha_romanoff.sql` agrega auditoría de anulación y categoría en cada línea de venta; `0007_slim_lady_ursula.sql` agrega el snapshot histórico de inventario; `0008_dry_norman_osborn.sql` permite asociar ingredientes a platos sin cantidades. Los campos históricos de stock y cantidades se conservan en la base por compatibilidad, pero la aplicación ya no los consulta ni modifica.
 
 ## Copias de seguridad
 

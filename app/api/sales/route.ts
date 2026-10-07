@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm'
 import { NextResponse } from 'next/server'
-import { requireUser } from '@/lib/auth'
-import { apiError, HttpError, moneyToCents, readObject } from '@/lib/http'
+import { requireAdmin, requireUser } from '@/lib/auth'
+import { apiError, HttpError, moneyToCents, readObject, requiredText } from '@/lib/http'
 import { getDb } from '@/lib/db'
 import {
   cashMovements,
@@ -57,6 +57,7 @@ export async function GET(request: Request) {
         change: record.changeCents / 100,
         items: (grouped.get(record.id) ?? []).map(item => ({
           ...item,
+          category: item.category,
           unitPrice: item.unitPriceCents / 100,
           total: (item.unitPriceCents * item.quantity) / 100,
         })),
@@ -145,6 +146,9 @@ export async function POST(request: Request) {
         return {
           id: previousSale.id,
           createdAt: previousSale.createdAt,
+          status: previousSale.status,
+          cancellationReason: previousSale.cancellationReason,
+          cancelledAt: previousSale.cancelledAt,
           serviceType: previousSale.serviceType,
           customerName: previousSale.customerName,
           tableNumber: previousSale.tableNumber,
@@ -156,6 +160,7 @@ export async function POST(request: Request) {
           change: previousSale.changeCents / 100,
           items: previousItems.map(item => ({
             name: item.name,
+            category: item.category,
             quantity: item.quantity,
             unitPrice: item.unitPriceCents / 100,
             total: (item.unitPriceCents * item.quantity) / 100,
@@ -182,43 +187,17 @@ export async function POST(request: Request) {
       const recipeRows = await tx
         .select({
           productId: productIngredients.productId,
-          ingredientId: ingredients.id,
           ingredientName: ingredients.name,
-          quantity: productIngredients.quantity,
-          stock: ingredients.stock,
         })
         .from(productIngredients)
         .innerJoin(ingredients, eq(productIngredients.ingredientId, ingredients.id))
         .where(inArray(productIngredients.productId, productIds))
-        .for('update')
-      const needed = new Map<number, { name: string; amount: number; stock: number }>()
       for (const item of items) {
         const recipe = recipeRows.filter(row => row.productId === item.productId)
         const product = byId.get(item.productId)!
         if (item.excludedIngredients.some(name => !recipe.some(row => row.ingredientName === name))) {
           throw new HttpError(`La personalización de "${product.name}" contiene un ingrediente ajeno a la receta.`, 400)
         }
-        for (const row of recipe) {
-          if (item.excludedIngredients.includes(row.ingredientName)) continue
-          const previous = needed.get(row.ingredientId)
-          needed.set(row.ingredientId, {
-            name: row.ingredientName,
-            amount: (previous?.amount ?? 0) + Number(row.quantity) * item.quantity,
-            stock: Number(row.stock),
-          })
-        }
-      }
-      for (const [ingredientId, requirement] of needed) {
-        if (requirement.stock + 0.000001 < requirement.amount) {
-          throw new HttpError(
-            `Stock insuficiente de ${requirement.name}: disponible ${requirement.stock}, requerido ${requirement.amount}.`,
-            409,
-          )
-        }
-        await tx
-          .update(ingredients)
-          .set({ stock: (requirement.stock - requirement.amount).toFixed(3) })
-          .where(eq(ingredients.id, ingredientId))
       }
       const totalCents = items.reduce((sum, item) => {
         return sum + (byId.get(item.productId)?.priceCents ?? 0) * item.quantity
@@ -254,6 +233,7 @@ export async function POST(request: Request) {
           saleId: sale.id,
           productId: product.id,
           name: product.name,
+          category: product.category,
           unitPriceCents: product.priceCents,
           quantity: item.quantity,
           excludedIngredients: item.excludedIngredients,
@@ -273,6 +253,9 @@ export async function POST(request: Request) {
       return {
         id: sale.id,
         createdAt: sale.createdAt,
+        status: sale.status,
+        cancellationReason: sale.cancellationReason,
+        cancelledAt: sale.cancelledAt,
         serviceType: sale.serviceType,
         customerName: sale.customerName,
         tableNumber: sale.tableNumber,
@@ -283,6 +266,7 @@ export async function POST(request: Request) {
         change: changeCents / 100,
         items: savedItems.map(item => ({
           name: item.name,
+          category: item.category,
           quantity: item.quantity,
           unitPrice: item.unitPriceCents / 100,
           total: (item.unitPriceCents * item.quantity) / 100,
@@ -293,6 +277,78 @@ export async function POST(request: Request) {
       }
     })
     return NextResponse.json(result, { status: 201 })
+  } catch (error) {
+    return apiError(error)
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const admin = await requireAdmin()
+    const body = await readObject(request)
+    const saleId = Number(body.id)
+    if (!Number.isSafeInteger(saleId) || saleId < 1) {
+      throw new HttpError('El número del pedido no es válido.', 400)
+    }
+    const reason = requiredText(body.reason, 'El motivo de anulación', 500)
+    if (reason.length < 5) {
+      throw new HttpError('El motivo de anulación debe tener al menos 5 caracteres.', 400)
+    }
+
+    const result = await getDb().transaction(async tx => {
+      const [sale] = await tx
+        .select()
+        .from(sales)
+        .where(eq(sales.id, saleId))
+        .limit(1)
+        .for('update')
+      if (!sale) throw new HttpError('No se encontró el pedido.', 404)
+      if (sale.status !== 'completed') {
+        throw new HttpError('Este pedido ya fue anulado.', 409)
+      }
+
+      if (sale.paymentMethod === 'cash' && sale.totalCents > 0) {
+        const [activeSession] = await tx
+          .select()
+          .from(cashSessions)
+          .where(isNull(cashSessions.closedAt))
+          .limit(1)
+          .for('update')
+        if (!activeSession) {
+          throw new HttpError(
+            'Abre la caja para registrar la devolución en efectivo y poder anular este pedido.',
+            409,
+          )
+        }
+        await tx.insert(cashMovements).values({
+          cashSessionId: activeSession.id,
+          type: 'withdrawal',
+          amountCents: sale.totalCents,
+          description: `Devolución de pedido #${sale.id}`,
+          userId: admin.id,
+        })
+      }
+
+      const cancelledAt = new Date()
+      const [cancelledSale] = await tx
+        .update(sales)
+        .set({
+          status: 'cancelled',
+          cancelledAt,
+          cancellationReason: reason,
+          cancelledBy: admin.id,
+        })
+        .where(eq(sales.id, sale.id))
+        .returning()
+      return cancelledSale
+    })
+
+    return NextResponse.json({
+      id: result.id,
+      status: result.status,
+      cancelledAt: result.cancelledAt,
+      cancellationReason: result.cancellationReason,
+    })
   } catch (error) {
     return apiError(error)
   }

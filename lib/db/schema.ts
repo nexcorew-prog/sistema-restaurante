@@ -81,12 +81,15 @@ export const productIngredients = pgTable(
     ingredientId: integer('ingredient_id')
       .notNull()
       .references(() => ingredients.id, { onDelete: 'cascade' }),
-    quantity: numeric('quantity', { precision: 12, scale: 3 }).notNull(),
+    quantity: numeric('quantity', { precision: 12, scale: 3 }),
   },
   table => [
     primaryKey({ columns: [table.productId, table.ingredientId] }),
     index('product_ingredients_ingredient_id_idx').on(table.ingredientId),
-    check('product_ingredients_quantity_positive', sql`${table.quantity} > 0`),
+    check(
+      'product_ingredients_quantity_positive',
+      sql`${table.quantity} IS NULL OR ${table.quantity} > 0`,
+    ),
   ],
 )
 
@@ -116,6 +119,9 @@ export const sales = pgTable(
     idempotencyKey: varchar('idempotency_key', { length: 64 }).notNull().unique(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     status: varchar('status', { length: 20 }).notNull().default('completed'),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancellationReason: text('cancellation_reason'),
+    cancelledBy: integer('cancelled_by').references(() => users.id, { onDelete: 'set null' }),
     paymentMethod: varchar('payment_method', { length: 20 }).notNull(),
     serviceType: varchar('service_type', { length: 20 }),
     customerName: varchar('customer_name', { length: 120 }),
@@ -132,6 +138,13 @@ export const sales = pgTable(
   table => [
     index('sales_created_at_idx').on(table.createdAt),
     index('sales_cash_session_id_idx').on(table.cashSessionId),
+    check('sales_status_valid', sql`${table.status} IN ('completed', 'cancelled')`),
+    check(
+      'sales_cancellation_details_valid',
+      sql`(${table.status} = 'completed' AND ${table.cancelledAt} IS NULL AND ${table.cancellationReason} IS NULL) OR
+        (${table.status} = 'cancelled' AND ${table.cancelledAt} IS NOT NULL AND
+          ${table.cancellationReason} IS NOT NULL AND length(trim(${table.cancellationReason})) > 0)`,
+    ),
     check(
       'sales_payment_method_valid',
       sql`${table.paymentMethod} IN ('cash', 'qr', 'card', 'transfer')`,
@@ -161,10 +174,14 @@ export const saleItems = pgTable(
       .references(() => sales.id, { onDelete: 'cascade' }),
     productId: integer('product_id').references(() => products.id, { onDelete: 'set null' }),
     name: varchar('name', { length: 120 }).notNull(),
+    category: varchar('category', { length: 60 }).notNull().default('Sin categoría'),
     unitPriceCents: integer('unit_price_cents').notNull(),
     quantity: integer('quantity').notNull(),
     excludedIngredients: jsonb('excluded_ingredients').$type<string[]>().notNull().default([]),
     note: text('note'),
+    inventorySnapshot: jsonb('inventory_snapshot').$type<
+      { ingredientId: number; name: string; quantity: number }[]
+    >(),
   },
   table => [index('sale_items_sale_id_idx').on(table.saleId), check('sale_items_quantity_positive', sql`${table.quantity} > 0`)],
 )
