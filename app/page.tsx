@@ -2005,7 +2005,7 @@ function SettingsPage({
             <input disabled value="Bolivianos (Bs)" className="mt-2 h-11 w-full rounded-xl border border-[#ece8e3] bg-[#fcfaf8] px-3 font-normal text-[#746b64]" />
           </label>
         </div>
-        <p className="mt-5 text-xs text-[#958d84]">El nombre y contacto se guardan en PostgreSQL y se aplican a las ventas futuras.</p>
+        
         <Button disabled={saving} type="submit" className="mt-6 rounded-xl bg-[#f97316] text-white hover:bg-[#ea580c]">
           {saving ? 'Guardando…' : 'Guardar cambios'}
         </Button>
